@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -13,6 +14,25 @@ class RepostRecord(models.Model):
     first_discovered_at = models.DateTimeField()
     last_checked_at = models.DateTimeField()
     data_source = models.CharField(max_length=100)
+    manual_reason = models.CharField(max_length=500, blank=True)
+    manually_added_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        related_name="manual_repost_records",
+        on_delete=models.SET_NULL,
+    )
+    manually_added_at = models.DateTimeField(null=True, blank=True)
+    is_valid = models.BooleanField(default=True, db_index=True)
+    invalidated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        related_name="invalidated_manual_repost_records",
+        on_delete=models.SET_NULL,
+    )
+    invalidated_at = models.DateTimeField(null=True, blank=True)
+    invalidation_reason = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -22,3 +42,7 @@ class RepostRecord(models.Model):
             models.UniqueConstraint(fields=["article", "platform", "normalized_url_hash"], name="uniq_repost_url")
         ]
         ordering = ["repost_published_at", "first_discovered_at", "id"]
+
+    @property
+    def is_manual_supplement(self) -> bool:
+        return self.data_source == "MANUAL_SUPPLEMENT"

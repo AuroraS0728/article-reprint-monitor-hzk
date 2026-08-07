@@ -30,7 +30,7 @@ class GeneratedReport(models.Model):
     snapshot = models.ForeignKey("monitoring.StatusSnapshot", on_delete=models.PROTECT)
     generated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT)
     generated_at = models.DateTimeField(auto_now_add=True)
-    report_file = models.FileField(upload_to=report_upload_path, max_length=300)
+    report_file = models.FileField(upload_to=report_upload_path, max_length=300, blank=True)
     file_sha256 = models.CharField(max_length=64)
     statistics_range = models.JSONField(default=dict)
 

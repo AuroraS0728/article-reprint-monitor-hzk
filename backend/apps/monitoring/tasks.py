@@ -8,6 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.articles.models import Article, ArticleStatus
+from apps.core.redaction import safe_error_message
 from apps.platforms.models import Platform, PlatformStatus
 from apps.reports.models import ReportEmailDelivery, ReportType
 from apps.reports.services import create_report
@@ -47,12 +48,13 @@ def run_detection_batch(self, batch_id: int) -> str:
         batch.save(update_fields=["status", "completed_at", "failure_message"])
         return "completed"
     except Exception as error:
-        DetectionBatch.objects.filter(pk=batch_id).update(status=BatchStatus.FAILED, failure_message=str(error)[:500])
+        error_message = safe_error_message(error, limit=500)
+        DetectionBatch.objects.filter(pk=batch_id).update(status=BatchStatus.FAILED, failure_message=error_message)
         TaskFailureLog.objects.create(
             task_name="run_detection_batch",
             batch_id=batch_id,
             error_type=type(error).__name__,
-            message=str(error)[:1000],
+            message=error_message,
         )
         raise
     finally:

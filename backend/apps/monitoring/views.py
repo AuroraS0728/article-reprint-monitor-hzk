@@ -150,7 +150,7 @@ class DetectionResultRepostsView(APIView):
 
     def get(self, request: Request, pk: int) -> Response:
         result = get_object_or_404(DetectionResult.objects.select_related("batch"), pk=pk)
-        rows = RepostRecord.objects.filter(article=result.article, platform=result.platform)
+        rows = RepostRecord.objects.filter(article=result.article, platform=result.platform, is_valid=True)
         if result.batch.completed_at:
             rows = rows.filter(first_discovered_at__lte=result.batch.completed_at)
         return ok(

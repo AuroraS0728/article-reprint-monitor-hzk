@@ -58,6 +58,7 @@ def report_dataset(*, snapshot: StatusSnapshot, period_start: date, period_end: 
             article_id__in=article_ids,
             platform_id__in=platform_ids,
             first_discovered_at__lte=snapshot.cutoff_at,
+            is_valid=True,
         ).order_by("first_discovered_at", "id")
     )
     reposts_by_pair: dict[tuple[int, int], list[RepostRecord]] = defaultdict(list)
@@ -71,6 +72,8 @@ def report_dataset(*, snapshot: StatusSnapshot, period_start: date, period_end: 
             item = matrix.get(f"{article.id}:{platform.id}", {})
             status = str(item.get("status", PlatformDetectionStatus.UNKNOWN))
             records = reposts_by_pair[(article.id, platform.id)]
+            if any(record.data_source == "MANUAL_SUPPLEMENT" for record in records):
+                status = str(PlatformDetectionStatus.FOUND)
             if status == PlatformDetectionStatus.FOUND:
                 found_count += 1
             if status in {PlatformDetectionStatus.FOUND, PlatformDetectionStatus.NOT_FOUND}:
@@ -101,6 +104,7 @@ def report_dataset(*, snapshot: StatusSnapshot, period_start: date, period_end: 
         RepostRecord.objects.filter(
             platform_id__in=platform_ids,
             first_discovered_at__date__range=(period_start, period_end),
+            is_valid=True,
         )
         .select_related("article", "platform")
         .order_by("first_discovered_at", "id")

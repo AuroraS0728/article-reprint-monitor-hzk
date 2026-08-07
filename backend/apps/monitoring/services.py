@@ -46,11 +46,27 @@ class AdapterNotValidatedError(RuntimeError):
     pass
 
 
+def update_platform_runtime_status(*, platform: Platform, succeeded: bool, failure_reason: str = "") -> None:
+    now = timezone.now()
+    if succeeded:
+        platform.last_success_at = now
+        platform.consecutive_failure_count = 0
+        platform.last_failure_reason = ""
+        platform.save(
+            update_fields=["last_success_at", "consecutive_failure_count", "last_failure_reason", "updated_at"]
+        )
+        return
+    platform.last_failure_at = now
+    platform.consecutive_failure_count += 1
+    platform.last_failure_reason = failure_reason[:500]
+    platform.save(update_fields=["last_failure_at", "consecutive_failure_count", "last_failure_reason", "updated_at"])
+
+
 def normalize_repost_url(value: str) -> str:
     parsed = urlsplit(value.strip())
     scheme = parsed.scheme.lower()
     hostname = (parsed.hostname or "").lower()
-    if not scheme or not hostname:
+    if scheme not in {"http", "https"} or not hostname:
         raise ValueError("转载链接必须是绝对 HTTP(S) URL。")
     port = (
         f":{parsed.port}"
@@ -106,6 +122,11 @@ def evaluate_detection(*, result: DetectionResult, adapter: PlatformAdapter | No
                 "updated_at",
             ]
         )
+        update_platform_runtime_status(
+            platform=platform,
+            succeeded=False,
+            failure_reason=result.reason_code or result.reason_message,
+        )
         return result
 
     confirmed_suffixes = tuple(platform.confirmed_title_suffixes)
@@ -130,6 +151,7 @@ def evaluate_detection(*, result: DetectionResult, adapter: PlatformAdapter | No
             "updated_at",
         ]
     )
+    update_platform_runtime_status(platform=platform, succeeded=True)
     for candidate in matching:
         upsert_repost_record(article=article, platform=platform, candidate=candidate, checked_at=result.completed_at)
     return result
@@ -157,6 +179,10 @@ def upsert_repost_record(
         },
     )
     if not created:
+        if record.is_manual_supplement:
+            record.last_checked_at = checked_at
+            record.save(update_fields=["last_checked_at", "updated_at"])
+            return record
         record.normalized_url = normalized_url
         record.original_url = candidate.original_url
         record.final_url = candidate.final_url

@@ -5,6 +5,8 @@ from django.conf import settings
 from django.core.mail import EmailMessage, get_connection
 from django.utils import timezone
 
+from apps.core.redaction import safe_error_message
+
 from .models import DeliveryStatus, ReportEmailDelivery, SMTPConfiguration
 
 
@@ -81,7 +83,7 @@ def send_delivery(delivery: ReportEmailDelivery) -> None:
         delivery.sent_at = timezone.now()
     except Exception as error:
         delivery.status = DeliveryStatus.FAILED
-        delivery.error_message = str(error)[:1000]
+        delivery.error_message = safe_error_message(error)
         raise
     finally:
         delivery.attempt_count += 1

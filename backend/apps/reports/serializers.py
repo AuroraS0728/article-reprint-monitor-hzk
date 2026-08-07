@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from apps.core.redaction import redact_sensitive
+
 from .mail_services import encrypt_authorization_code
 from .models import GeneratedReport, ReportEmailDelivery, SMTPConfiguration
 
@@ -79,3 +81,6 @@ class EmailDeliverySerializer(serializers.ModelSerializer[ReportEmailDelivery]):
             "created_at",
         ]
         read_only_fields = fields
+
+    def to_representation(self, instance: ReportEmailDelivery) -> dict[str, object]:
+        return redact_sensitive(super().to_representation(instance))

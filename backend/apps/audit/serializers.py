@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.core.redaction import redact_sensitive
+
 from .models import OperationLog
 
 
@@ -20,3 +22,6 @@ class OperationLogSerializer(serializers.ModelSerializer[OperationLog]):
             "ip_address",
             "created_at",
         ]
+
+    def to_representation(self, instance: OperationLog) -> dict[str, object]:
+        return redact_sensitive(super().to_representation(instance))

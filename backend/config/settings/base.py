@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "apps.monitoring",
     "apps.reposts",
     "apps.reports",
+    "apps.operations",
     "apps.core",
 ]
 MIDDLEWARE = [
@@ -118,5 +119,13 @@ CELERY_BEAT_SCHEDULE = {
     "snapshot-weekly-status": {
         "task": "apps.monitoring.tasks.create_weekly_status_snapshot",
         "schedule": crontab(minute=30, hour=7, day_of_week="mon"),
+    },
+    "cleanup-expired-data": {
+        "task": "apps.operations.tasks.cleanup_expired_data_task",
+        "schedule": crontab(minute=0, hour=2),
+    },
+    "database-backup-daily": {
+        "task": "apps.operations.tasks.create_database_backup_task",
+        "schedule": crontab(minute=30, hour=1),
     },
 }

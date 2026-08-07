@@ -37,8 +37,16 @@ class ReportDownloadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ReportSerializer
 
-    def get(self, request: Request, pk: int) -> FileResponse:
+    def get(self, request: Request, pk: int) -> Response | FileResponse:
         report = get_object_or_404(GeneratedReport, pk=pk)
+        if not report.report_file:
+            return Response(
+                {
+                    "success": False,
+                    "error": {"code": "REPORT_FILE_EXPIRED", "message": "报表文件已按保留策略清理，可重新生成。"},
+                },
+                status=404,
+            )
         record_audit(request, action_type="REPORT_DOWNLOAD", target_type="GeneratedReport", target_id=report.id)
         return FileResponse(
             report.report_file.open("rb"),

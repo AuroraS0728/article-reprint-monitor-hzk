@@ -29,6 +29,7 @@ production*.yml
 samples/
 frontend/node_modules/
 frontend/.pnpm-store/
+.pnpm-store/
 frontend/dist/
 frontend/*.tsbuildinfo
 *.log

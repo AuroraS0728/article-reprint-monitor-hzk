@@ -4,8 +4,10 @@ from datetime import datetime
 
 from django.db.models import OuterRef, Subquery
 
+from apps.reposts.models import RepostRecord
+
 from .batch_services import batch_statistics
-from .models import DetectionBatch, DetectionResult, StatusSnapshot
+from .models import DetectionBatch, DetectionResult, PlatformDetectionStatus, StatusSnapshot
 
 
 def matrix_data_as_of(*, cutoff_at: datetime | None = None) -> dict[str, dict[str, object]]:
@@ -14,7 +16,7 @@ def matrix_data_as_of(*, cutoff_at: datetime | None = None) -> dict[str, dict[st
         latest_rows = latest_rows.filter(completed_at__lte=cutoff_at)
     latest_ids = latest_rows.order_by("-completed_at", "-id").values("id")[:1]
     rows = DetectionResult.objects.filter(id=Subquery(latest_ids)).select_related("article", "platform")
-    return {
+    matrix = {
         f"{row.article_id}:{row.platform_id}": {
             "result_id": row.id,
             "article_id": row.article_id,
@@ -25,6 +27,19 @@ def matrix_data_as_of(*, cutoff_at: datetime | None = None) -> dict[str, dict[st
         }
         for row in rows
     }
+    manual_records = RepostRecord.objects.filter(data_source="MANUAL_SUPPLEMENT", is_valid=True)
+    if cutoff_at is not None:
+        manual_records = manual_records.filter(manually_added_at__lte=cutoff_at)
+    for article_id, platform_id in manual_records.values_list("article_id", "platform_id").distinct():
+        key = f"{article_id}:{platform_id}"
+        item = matrix.get(
+            key,
+            {"result_id": None, "article_id": article_id, "platform_id": platform_id, "completed_at": None},
+        )
+        item["status"] = PlatformDetectionStatus.FOUND
+        item["reason_code"] = "MANUAL_SUPPLEMENT"
+        matrix[key] = item
+    return matrix
 
 
 def create_status_snapshot(

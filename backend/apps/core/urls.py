@@ -19,6 +19,15 @@ from apps.monitoring.views import (
     StatusMatrixView,
     StatusSnapshotListView,
 )
+from apps.operations.views import (
+    DatabaseBackupListView,
+    FailedDetectionBatchListView,
+    MaintenanceActionView,
+    MaintenanceRunListView,
+    RuntimeStatusView,
+    SystemRuntimeConfigurationView,
+    TaskFailureLogListView,
+)
 from apps.platforms.views import PlatformActionView, PlatformDetailView, PlatformListCreateView
 from apps.reports.views import (
     EmailDeliveryListView,
@@ -29,6 +38,7 @@ from apps.reports.views import (
     SMTPConfigurationView,
     TestEmailView,
 )
+from apps.reposts.views import ManualRepostCreateView, ManualRepostValidityView, RepostRecordListView
 
 from .views import ChangePasswordView, HealthView, LoginView, LogoutView, MeView, UserDetailView, UserListCreateView
 
@@ -50,11 +60,21 @@ urlpatterns = [
     path("platforms/<int:pk>", PlatformDetailView.as_view()),
     path("platforms/<int:pk>/<str:action>", PlatformActionView.as_view()),
     path("operation-logs", OperationLogListView.as_view()),
+    path("system-runtime-configuration", SystemRuntimeConfigurationView.as_view()),
+    path("runtime-status", RuntimeStatusView.as_view()),
+    path("failed-detection-batches", FailedDetectionBatchListView.as_view()),
+    path("task-failure-logs", TaskFailureLogListView.as_view()),
+    path("maintenance-runs", MaintenanceRunListView.as_view()),
+    path("database-backups", DatabaseBackupListView.as_view()),
+    path("maintenance/<str:action>", MaintenanceActionView.as_view()),
     path("detection-batches", DetectionBatchListCreateView.as_view()),
     path("detection-batches/<int:pk>", DetectionBatchDetailView.as_view()),
     path("detection-batches/<int:pk>/matrix", DetectionMatrixView.as_view()),
     path("detection-batches/<int:pk>/statistics", DetectionStatisticsView.as_view()),
     path("detection-results/<int:pk>/reposts", DetectionResultRepostsView.as_view()),
+    path("repost-records", RepostRecordListView.as_view()),
+    path("manual-reposts", ManualRepostCreateView.as_view()),
+    path("manual-reposts/<int:pk>/<str:action>", ManualRepostValidityView.as_view()),
     path("detection-selection-defaults", DetectionSelectionDefaultsView.as_view()),
     path("status-matrix", StatusMatrixView.as_view()),
     path("status-snapshots", StatusSnapshotListView.as_view()),

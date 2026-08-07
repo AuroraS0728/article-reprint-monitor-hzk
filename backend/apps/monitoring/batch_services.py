@@ -9,6 +9,7 @@ from django.db import transaction
 
 from apps.articles.models import Article, ArticleStatus
 from apps.platforms.models import Platform, PlatformStatus
+from apps.reposts.models import RepostRecord
 
 from .models import DetectionBatch, DetectionResult
 
@@ -63,14 +64,29 @@ def automatic_idempotency_key(*, week: str, hour: str) -> str:
 
 
 def batch_statistics(batch: DetectionBatch) -> dict[str, object]:
-    results = list(batch.results.values("article_id", "status"))
+    results = list(batch.results.values("article_id", "platform_id", "status"))
+    manual_pairs = set(
+        RepostRecord.objects.filter(
+            article_id__in=batch.article_ids,
+            platform_id__in=batch.platform_ids,
+            data_source="MANUAL_SUPPLEMENT",
+            is_valid=True,
+        ).values_list("article_id", "platform_id")
+    )
     platform_total = len(batch.platform_ids)
     article_total = len(batch.article_ids)
     per_article: list[dict[str, object]] = []
     for article_id in batch.article_ids:
         article_results = [item for item in results if item["article_id"] == article_id]
-        found = sum(item["status"] == "FOUND" for item in article_results)
-        completed = sum(item["status"] in {"FOUND", "NOT_FOUND"} for item in article_results)
+        result_by_platform = {cast(int, item["platform_id"]): cast(str, item["status"]) for item in article_results}
+        found = sum(
+            result_by_platform.get(platform_id) == "FOUND" or (article_id, platform_id) in manual_pairs
+            for platform_id in batch.platform_ids
+        )
+        completed = sum(
+            result_by_platform.get(platform_id) in {"FOUND", "NOT_FOUND"} or (article_id, platform_id) in manual_pairs
+            for platform_id in batch.platform_ids
+        )
         per_article.append(
             {
                 "article_id": article_id,
@@ -81,7 +97,10 @@ def batch_statistics(batch: DetectionBatch) -> dict[str, object]:
             }
         )
     reposted_articles = sum(cast(int, item["reposted_platform_count"]) > 0 for item in per_article)
-    completed_cells = sum(item["status"] in {"FOUND", "NOT_FOUND"} for item in results)
+    completed_cells = sum(item["status"] in {"FOUND", "NOT_FOUND"} for item in results) + sum(
+        item["status"] == "UNKNOWN" and (cast(int, item["article_id"]), cast(int, item["platform_id"])) in manual_pairs
+        for item in results
+    )
     return {
         "article_total": article_total,
         "platform_total": platform_total,
