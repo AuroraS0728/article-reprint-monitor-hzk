@@ -1,0 +1,28 @@
+# 已知原创文章与转载链接样本
+# 编码：UTF-8
+# 用途：平台适配验证、检出率测试、人工核对
+# 说明：该文件中的链接是已知样本，不代表所有平台均已完成适配。
+
+[ARTICLE]
+article_id=sample-001
+original_title=涉嫌信披违规 联创光电被立案调查
+original_publish_date=2026-08-05
+original_platform=证券市场周刊官网
+original_url=https://static.weeklyonstock.com/26/0805/mumu095018.html
+
+[KNOWN_REPRINTS]
+今日头条=https://www.toutiao.com/item/7670360688531702307/
+搜狐=https://www.sohu.com/a/1058938527_135869
+雪球=http://xueqiu.com/2994748381/403716788
+百家号=http://baijiahao.baidu.com/s?id=1872646743062235511
+东方财富=https://caifuhao.eastmoney.com/news/20260805100007278296600
+网易=http://www.163.com/dy/article/L3IEPNOT0519L38V.html
+顶端新闻=https://static.dingxinwen.com/dd-sharepage/detail/index.html?id=17342667#/
+微博=https://weibo.com/1648948823/RbXfdl0FL
+京东金融=https://content.jr.jd.com/article/index.html?pageId=735292384
+
+[VALIDATION_RULES]
+expected_title_match=normalized_exact
+blank_means=unknown
+known_reprint_expected_status=1
+notes=第一阶段优先从已确定的5个平台中选择适配对象；不得将未列出的平台自动判定为0。

@@ -1,0 +1,13 @@
+# Development artefacts must not become part of the application image.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+*.log
+staticfiles/
+media/
+reports/
+.env
+.env.*

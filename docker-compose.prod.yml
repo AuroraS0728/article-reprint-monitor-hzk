@@ -1,0 +1,14 @@
+services:
+  web:
+    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2
+    ports: []
+  frontend:
+    profiles: [disabled]
+  nginx:
+    profiles: []
+    ports: ["80:80"]
+  mysql:
+    ports: []
+  redis:
+    ports: []
+

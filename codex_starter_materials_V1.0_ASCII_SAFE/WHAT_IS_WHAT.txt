@@ -1,0 +1,5 @@
+AGENTS.md：给Codex的长期项目规则，放在仓库根目录。
+README.md：项目入口说明，告诉开发者项目是什么、目录如何组织、如何本机启动。
+prompts/*.md：每一轮单独发送给Codex的任务指令。
+samples/known_original_and_reprints.txt：已知原创文章和转载链接样本。
+docs/：正式产品、技术、安全和测试文档。

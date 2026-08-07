@@ -1,0 +1,16 @@
+[tool.black]
+line-length = 120
+target-version = ["py312"]
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["migrations"]
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+[tool.mypy]
+python_version = "3.12"
+plugins = ["mypy_django_plugin.main"]
+check_untyped_defs = true
+ignore_missing_imports = true
+[tool.django-stubs]
+django_settings_module = "config.settings.local"

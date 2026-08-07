@@ -1,0 +1,76 @@
+{
+  "capture_type": "local_safe_http_direct_url_probe",
+  "captured_date": "2026-08-07",
+  "classification": "UNSPECIFIED_TEST_DATA",
+  "important": "These records do not classify any URL as original or reposted. They only record an explicit local HTTP validation of supplied test URLs.",
+  "results": [
+    {
+      "channel": "周刊官网",
+      "requested_url": "https://static.weeklyonstock.com/26/0807/wd111932.html",
+      "final_url": "https://static.weeklyonstock.com/26/0807/wd111932.html",
+      "status_code": 200,
+      "content_sha256": "634b996b847837357cfd47f841c32a38663507046b737cda38a3ada51dfcf243",
+      "content_bytes": 31723,
+      "html_title": "郑州银行60亿元二级资本债落地 筑牢中长期稳健经营发展根基-周刊原创-证券市场周刊",
+      "document_metadata": {},
+      "time_elements": [],
+      "literal_title_match": false
+    },
+    {
+      "channel": "同花顺",
+      "requested_url": "https://stock.10jqka.com.cn/hks/20260807/c678755238.shtml",
+      "final_url": "https://stock.10jqka.com.cn/hks/20260807/c678755238.shtml",
+      "status_code": 200,
+      "content_sha256": "8e4b19d176aaeddda86aeb34f1c2fcc8f7094ec63d1a37c35c2513f8c950c94e",
+      "content_bytes": 113454,
+      "html_title": "郑州银行60亿元二级资本债落地 筑牢中长期稳健经营发展根基",
+      "document_metadata": {
+        "canonical": "https://stock.10jqka.com.cn/20260807/c678755238.shtml",
+        "og:title": "郑州银行60亿元二级资本债落地 筑牢中长期稳健经营发展根基",
+        "og:url": "https://stock.10jqka.com.cn/20260807/c678755238.shtml"
+      },
+      "time_elements": [],
+      "literal_title_match": true
+    },
+    {
+      "channel": "东方财富网",
+      "requested_url": "https://finance.eastmoney.com/a/202608073834993070.html",
+      "final_url": "https://finance.eastmoney.com/a/202608073834993070.html",
+      "status_code": 200,
+      "content_sha256": "3dc151474eaa6e7bbde82fa54293641270b259befe7f9661864e8efac41d46ca",
+      "content_bytes": 63708,
+      "html_title": "郑州银行60亿元二级资本债落地 筑牢中长期稳健经营发展根基 _ 东方财富网",
+      "document_metadata": {},
+      "time_elements": [],
+      "literal_title_match": false
+    },
+    {
+      "channel": "新浪财经",
+      "requested_url": "https://finance.sina.com.cn/roll/2026-08-07/doc-inimnent3234345.shtml",
+      "final_url": "https://finance.sina.com.cn/roll/2026-08-07/doc-inimnent3234345.shtml",
+      "status_code": 200,
+      "content_sha256": "06b5c37080437730e087ab61dfe5baef201e47549fd8698f7b49340c410f31c3",
+      "content_bytes": 101909,
+      "html_title": "郑州银行60亿元二级资本债落地 筑牢中长期稳健经营发展根基_新浪财经_新浪网",
+      "document_metadata": {
+        "og:title": "郑州银行60亿元二级资本债落地 筑牢中长期稳健经营发展根基",
+        "og:url": "https://finance.sina.com.cn/roll/2026-08-07/doc-inimnent3234345.shtml",
+        "article:published_time": "2026-08-07T11:30:32+08:00"
+      },
+      "time_elements": [],
+      "literal_title_match": false
+    },
+    {
+      "channel": "中金在线",
+      "requested_url": "http://sc.stock.cnfol.com/shichangjuejin/20260807/32328633.shtml",
+      "final_url": "http://sc.stock.cnfol.com/shichangjuejin/20260807/32328633.shtml",
+      "status_code": 200,
+      "content_sha256": "6f55e40f539a428aa4458ed0ea65627c26bdcbb3cc8f83f0e90df0319b15d553",
+      "content_bytes": 59065,
+      "html_title": "郑州银行60亿元二级资本债落地 筑牢中长期稳健经营发展根基_市场掘金_市场_中金在线",
+      "document_metadata": {},
+      "time_elements": [],
+      "literal_title_match": false
+    }
+  ]
+}

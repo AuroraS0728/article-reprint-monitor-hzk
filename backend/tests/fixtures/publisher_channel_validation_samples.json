@@ -1,0 +1,12 @@
+{
+  "purpose": "manual local validation only; never load into production configuration or article classification",
+  "classification": "UNSPECIFIED_TEST_DATA",
+  "expected_title": "郑州银行60亿元二级资本债落地 筑牢中长期稳健经营发展根基",
+  "urls": [
+    "https://static.weeklyonstock.com/26/0807/wd111932.html",
+    "https://stock.10jqka.com.cn/hks/20260807/c678755238.shtml",
+    "https://finance.eastmoney.com/a/202608073834993070.html",
+    "https://finance.sina.com.cn/roll/2026-08-07/doc-inimnent3234345.shtml",
+    "http://sc.stock.cnfol.com/shichangjuejin/20260807/32328633.shtml"
+  ]
+}
