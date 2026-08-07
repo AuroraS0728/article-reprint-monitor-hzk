@@ -1,7 +1,8 @@
-FROM python:3.12.10-slim
+FROM python:3.12-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends default-libmysqlclient-dev default-mysql-client build-essential pkg-config \
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends default-libmysqlclient-dev default-mysql-client build-essential pkg-config \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 appuser
 COPY requirements.txt .
