@@ -11,6 +11,7 @@ from apps.accounts.models import User
 from apps.audit.services import record_audit
 from apps.core.permissions import IsAdministrator
 from apps.core.redaction import redact_sensitive
+from apps.core.serializers import EmptySerializer
 from apps.core.views import ok
 from apps.monitoring.models import DetectionBatch, TaskFailureLog
 from apps.monitoring.serializers import DetectionBatchSerializer
@@ -79,6 +80,7 @@ class FailedDetectionBatchListView(APIView):
 
 class TaskFailureLogListView(APIView):
     permission_classes = [IsAdministrator]
+    serializer_class = EmptySerializer
 
     def get(self, request: Request) -> Response:
         return ok(
@@ -114,6 +116,7 @@ class DatabaseBackupListView(APIView):
 
 class MaintenanceActionView(APIView):
     permission_classes = [IsAdministrator]
+    serializer_class = EmptySerializer
 
     def post(self, request: Request, action: str) -> Response:
         if action == "cleanup":

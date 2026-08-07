@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -34,6 +35,7 @@ class DetectionBatchListCreateView(APIView):
     def get_permissions(self):
         return [CanOperate()] if self.request.method == "POST" else [permissions.IsAuthenticated()]
 
+    @extend_schema(operation_id="detection_batch_list")
     def get(self, request: Request) -> Response:
         return ok(DetectionBatchSerializer(DetectionBatch.objects.all()[:100], many=True).data)
 
@@ -72,6 +74,7 @@ class DetectionBatchDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = DetectionBatchSerializer
 
+    @extend_schema(operation_id="detection_batch_retrieve")
     def get(self, request: Request, pk: int) -> Response:
         return ok(DetectionBatchSerializer(get_object_or_404(DetectionBatch, pk=pk)).data)
 

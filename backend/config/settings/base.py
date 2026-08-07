@@ -80,7 +80,19 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
-SPECTACULAR_SETTINGS = {"TITLE": "文章转载监测系统 API", "VERSION": "1.0.0"}
+SPECTACULAR_SETTINGS = {
+    "TITLE": "文章转载监测系统 API",
+    "VERSION": "1.0.0",
+    "ENUM_NAME_OVERRIDES": {
+        "ArticleStatusEnum": "apps.articles.models.ArticleStatus",
+        "ImportStatusEnum": "apps.articles.models.ImportStatus",
+        "PlatformStatusEnum": "apps.platforms.models.PlatformStatus",
+        "BatchStatusEnum": "apps.monitoring.models.BatchStatus",
+        "DetectionStatusEnum": "apps.monitoring.models.PlatformDetectionStatus",
+        "DeliveryStatusEnum": "apps.reports.models.DeliveryStatus",
+        "MaintenanceStatusEnum": "apps.operations.models.MaintenanceStatus",
+    },
+}
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 PRIVATE_UPLOAD_ROOT = Path(os.environ.get("PRIVATE_UPLOAD_ROOT", BASE_DIR / "private_uploads"))

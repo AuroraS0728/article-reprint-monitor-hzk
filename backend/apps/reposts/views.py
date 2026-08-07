@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -40,6 +41,7 @@ class ManualRepostCreateView(APIView):
     permission_classes = [CanOperate]
     serializer_class = ManualRepostCreateSerializer
 
+    @extend_schema(operation_id="manual_repost_create")
     def post(self, request: Request) -> Response:
         serializer = ManualRepostCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -72,6 +74,7 @@ class ManualRepostValidityView(APIView):
     permission_classes = [IsAdministrator]
     serializer_class = ManualRepostStateSerializer
 
+    @extend_schema(operation_id="manual_repost_validity_update")
     def post(self, request: Request, pk: int, action: str) -> Response:
         serializer = ManualRepostStateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

@@ -46,6 +46,21 @@ def create_status_snapshot(
     *, snapshot_type: str, cutoff_at: datetime, source_batch: DetectionBatch | None = None
 ) -> StatusSnapshot:
     matrix_data = matrix_data_as_of(cutoff_at=cutoff_at)
+    # A weekly report is based on the dedicated final-detection batch.  That
+    # batch may complete a few minutes after the nominal 07:00 cutoff, so a
+    # plain "completed_at <= cutoff" query would incorrectly discard its
+    # results.  Overlaying the selected source batch preserves the required
+    # final state without changing historical daily snapshots.
+    if source_batch is not None:
+        for row in DetectionResult.objects.filter(batch=source_batch).select_related("article", "platform"):
+            matrix_data[f"{row.article_id}:{row.platform_id}"] = {
+                "result_id": row.id,
+                "article_id": row.article_id,
+                "platform_id": row.platform_id,
+                "status": row.status,
+                "reason_code": row.reason_code,
+                "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            }
     statistics_data = (
         batch_statistics(source_batch)
         if source_batch
