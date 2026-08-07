@@ -25,7 +25,12 @@ class Migration(migrations.Migration):
                 ("use_tls", models.BooleanField(default=True)),
                 ("enabled", models.BooleanField(default=False)),
                 ("updated_at", models.DateTimeField(auto_now=True)),
-                ("updated_by", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, to=settings.AUTH_USER_MODEL)),
+                (
+                    "updated_by",
+                    models.ForeignKey(
+                        blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, to=settings.AUTH_USER_MODEL
+                    ),
+                ),
             ],
             options={"db_table": "reports_smtp_configuration"},
         ),
@@ -42,8 +47,16 @@ class Migration(migrations.Migration):
                 ("report_file", models.FileField(max_length=300, upload_to=apps.reports.models.report_upload_path)),
                 ("file_sha256", models.CharField(max_length=64)),
                 ("statistics_range", models.JSONField(default=dict)),
-                ("generated_by", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, to=settings.AUTH_USER_MODEL)),
-                ("snapshot", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to="monitoring.statussnapshot")),
+                (
+                    "generated_by",
+                    models.ForeignKey(
+                        blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, to=settings.AUTH_USER_MODEL
+                    ),
+                ),
+                (
+                    "snapshot",
+                    models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to="monitoring.statussnapshot"),
+                ),
             ],
             options={"db_table": "reports_generated_report", "ordering": ["-report_date", "-version", "-id"]},
         ),
@@ -51,20 +64,41 @@ class Migration(migrations.Migration):
             name="ReportEmailDelivery",
             fields=[
                 ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
-                ("status", models.CharField(choices=[("PENDING", "待发送"), ("SENT", "已发送"), ("FAILED", "发送失败")], default="PENDING", max_length=16)),
+                (
+                    "status",
+                    models.CharField(
+                        choices=[("PENDING", "待发送"), ("SENT", "已发送"), ("FAILED", "发送失败")],
+                        default="PENDING",
+                        max_length=16,
+                    ),
+                ),
                 ("recipients", models.JSONField(default=list)),
                 ("cc_recipients", models.JSONField(default=list)),
                 ("attempt_count", models.PositiveSmallIntegerField(default=0)),
                 ("error_message", models.CharField(blank=True, max_length=1000)),
                 ("sent_at", models.DateTimeField(blank=True, null=True)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
-                ("report", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="email_deliveries", to="reports.generatedreport")),
-                ("requested_by", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, to=settings.AUTH_USER_MODEL)),
+                (
+                    "report",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="email_deliveries",
+                        to="reports.generatedreport",
+                    ),
+                ),
+                (
+                    "requested_by",
+                    models.ForeignKey(
+                        blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, to=settings.AUTH_USER_MODEL
+                    ),
+                ),
             ],
             options={"db_table": "reports_email_delivery", "ordering": ["-created_at", "-id"]},
         ),
         migrations.AddConstraint(
             model_name="generatedreport",
-            constraint=models.UniqueConstraint(fields=("report_type", "report_date", "version"), name="uniq_report_version"),
+            constraint=models.UniqueConstraint(
+                fields=("report_type", "report_date", "version"), name="uniq_report_version"
+            ),
         ),
     ]

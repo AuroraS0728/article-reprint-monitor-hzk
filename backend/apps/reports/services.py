@@ -11,13 +11,13 @@ from django.db import transaction
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from apps.articles.models import Article
 from apps.accounts.models import User
+from apps.articles.models import Article
 from apps.monitoring.models import PlatformDetectionStatus, StatusSnapshot
 from apps.platforms.models import Platform
 from apps.reposts.models import RepostRecord
 
-from .models import GeneratedReport, ReportType
+from .models import GeneratedReport
 
 HEADER_FILL = PatternFill("solid", fgColor="D9E1F2")
 HEADER_FONT = Font(name="Carlito", size=11, bold=True, color="000000")
@@ -30,11 +30,12 @@ def safe_excel_text(value: object) -> str:
 
 
 def _status_symbol(status: str) -> str:
-    return {
-        PlatformDetectionStatus.FOUND: "√",
-        PlatformDetectionStatus.NOT_FOUND: "×",
-        PlatformDetectionStatus.UNKNOWN: "—",
-    }.get(status, "—")
+    symbols: dict[str, str] = {
+        str(PlatformDetectionStatus.FOUND): "√",
+        str(PlatformDetectionStatus.NOT_FOUND): "×",
+        str(PlatformDetectionStatus.UNKNOWN): "—",
+    }
+    return symbols.get(status, "—")
 
 
 def _status_display(status: str) -> str:
@@ -47,7 +48,9 @@ def report_dataset(*, snapshot: StatusSnapshot, period_start: date, period_end: 
     article_ids = list(batch.article_ids) if batch else sorted({int(item["article_id"]) for item in matrix.values()})
     platform_ids = list(batch.platform_ids) if batch else sorted({int(item["platform_id"]) for item in matrix.values()})
     articles = list(
-        Article.objects.filter(id__in=article_ids, published_date__range=(period_start, period_end)).order_by("published_date", "id")
+        Article.objects.filter(id__in=article_ids, published_date__range=(period_start, period_end)).order_by(
+            "published_date", "id"
+        )
     )
     platforms = list(Platform.objects.filter(id__in=platform_ids).order_by("name", "id"))
     repost_rows = list(
@@ -87,8 +90,7 @@ def report_dataset(*, snapshot: StatusSnapshot, period_start: date, period_end: 
         count = len(rows)
         found = sum(row["cells"][platform.id]["status"] == PlatformDetectionStatus.FOUND for row in rows)
         completed = sum(
-            row["cells"][platform.id]["status"]
-            in {PlatformDetectionStatus.FOUND, PlatformDetectionStatus.NOT_FOUND}
+            row["cells"][platform.id]["status"] in {PlatformDetectionStatus.FOUND, PlatformDetectionStatus.NOT_FOUND}
             for row in rows
         )
         platform_statistics[platform.id] = {
@@ -127,7 +129,9 @@ def _set_link(cell: Any, url: str) -> None:
     cell.style = "Hyperlink"
 
 
-def build_report_workbook(*, snapshot: StatusSnapshot, period_start: date, period_end: date) -> tuple[bytes, dict[str, Any]]:
+def build_report_workbook(
+    *, snapshot: StatusSnapshot, period_start: date, period_end: date
+) -> tuple[bytes, dict[str, Any]]:
     data = report_dataset(snapshot=snapshot, period_start=period_start, period_end=period_end)
     platforms: list[Platform] = data["platforms"]
     rows: list[dict[str, Any]] = data["rows"]
@@ -139,7 +143,12 @@ def build_report_workbook(*, snapshot: StatusSnapshot, period_start: date, perio
     _style_header(sheet, f"A1:{chr(65 + len(headers) - 1)}1")
     for row in rows:
         article = row["article"]
-        values: list[object] = [article.published_date, safe_excel_text(article.title), safe_excel_text(article.author_department), row["repost_rate"]]
+        values: list[object] = [
+            article.published_date,
+            safe_excel_text(article.title),
+            safe_excel_text(article.author_department),
+            row["repost_rate"],
+        ]
         values.extend("" for _ in platforms)
         values.append(row["completion_rate"])
         sheet.append(values)
@@ -176,8 +185,8 @@ def build_report_workbook(*, snapshot: StatusSnapshot, period_start: date, perio
                 ]
             )
             _set_link(platform_sheet.cell(platform_sheet.max_row, 2), repost.final_url or repost.original_url)
-        for column, width in {"A": 48, "B": 50, "C": 18, "D": 19}.items():
-            platform_sheet.column_dimensions[column].width = width
+        for column_name, width in {"A": 48, "B": 50, "C": 18, "D": 19}.items():
+            platform_sheet.column_dimensions[column_name].width = width
 
     new_links = workbook.create_sheet("新增转载链接")
     new_links.append(["文章名称", "平台", "链接", "转载发布时间", "首次发现时间"])
@@ -193,8 +202,8 @@ def build_report_workbook(*, snapshot: StatusSnapshot, period_start: date, perio
             ]
         )
         _set_link(new_links.cell(new_links.max_row, 3), repost.final_url or repost.original_url)
-    for column, width in {"A": 48, "B": 20, "C": 50, "D": 18, "E": 19}.items():
-        new_links.column_dimensions[column].width = width
+    for column_name, width in {"A": 48, "B": 20, "C": 50, "D": 18, "E": 19}.items():
+        new_links.column_dimensions[column_name].width = width
 
     summary = workbook.create_sheet("总统计")
     summary.append(["标题", "转载率", *[platform.name for platform in platforms], "检测完成率"])
@@ -210,8 +219,12 @@ def build_report_workbook(*, snapshot: StatusSnapshot, period_start: date, perio
         )
     summary.append([])
     summary.append(["平台统计", "", *[platform.name for platform in platforms]])
-    summary.append(["平台转载率", "", *[data["platform_statistics"][platform.id]["repost_rate"] for platform in platforms]])
-    summary.append(["检测完成率", "", *[data["platform_statistics"][platform.id]["completion_rate"] for platform in platforms]])
+    summary.append(
+        ["平台转载率", "", *[data["platform_statistics"][platform.id]["repost_rate"] for platform in platforms]]
+    )
+    summary.append(
+        ["检测完成率", "", *[data["platform_statistics"][platform.id]["completion_rate"] for platform in platforms]]
+    )
     _style_header(summary, f"A{len(rows) + 3}:{chr(65 + len(platforms) + 1)}{len(rows) + 3}")
     for cell in summary["B"]:
         if cell.row > 1:
@@ -291,6 +304,8 @@ def create_report(
             file_sha256=sha256(content).hexdigest(),
             statistics_range=statistics,
         )
-        report.report_file.save(f"{report_type.lower()}-{report_date.isoformat()}-v{report.version}.xlsx", ContentFile(content), save=False)
+        report.report_file.save(
+            f"{report_type.lower()}-{report_date.isoformat()}-v{report.version}.xlsx", ContentFile(content), save=False
+        )
         report.save()
     return report

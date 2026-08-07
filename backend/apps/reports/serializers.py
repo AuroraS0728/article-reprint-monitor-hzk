@@ -12,8 +12,17 @@ class ReportSerializer(serializers.ModelSerializer[GeneratedReport]):
     class Meta:
         model = GeneratedReport
         fields = [
-            "id", "report_type", "report_date", "version", "period_start", "period_end", "generated_at",
-            "generated_by", "statistics_range", "file_sha256", "download_url",
+            "id",
+            "report_type",
+            "report_date",
+            "version",
+            "period_start",
+            "period_end",
+            "generated_at",
+            "generated_by",
+            "statistics_range",
+            "file_sha256",
+            "download_url",
         ]
         read_only_fields = fields
 
@@ -30,8 +39,17 @@ class SMTPConfigurationSerializer(serializers.ModelSerializer[SMTPConfiguration]
     class Meta:
         model = SMTPConfiguration
         fields = [
-            "host", "port", "username", "from_email", "recipients", "cc_recipients", "use_tls", "enabled",
-            "authorization_code", "authorization_code_configured", "updated_at",
+            "host",
+            "port",
+            "username",
+            "from_email",
+            "recipients",
+            "cc_recipients",
+            "use_tls",
+            "enabled",
+            "authorization_code",
+            "authorization_code_configured",
+            "updated_at",
         ]
         read_only_fields = ["authorization_code_configured", "updated_at"]
 
@@ -48,5 +66,16 @@ class SMTPConfigurationSerializer(serializers.ModelSerializer[SMTPConfiguration]
 class EmailDeliverySerializer(serializers.ModelSerializer[ReportEmailDelivery]):
     class Meta:
         model = ReportEmailDelivery
-        fields = ["id", "report", "status", "recipients", "cc_recipients", "attempt_count", "error_message", "requested_by", "sent_at", "created_at"]
+        fields = [
+            "id",
+            "report",
+            "status",
+            "recipients",
+            "cc_recipients",
+            "attempt_count",
+            "error_message",
+            "requested_by",
+            "sent_at",
+            "created_at",
+        ]
         read_only_fields = fields

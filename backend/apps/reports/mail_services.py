@@ -59,7 +59,10 @@ def send_delivery(delivery: ReportEmailDelivery) -> None:
         )
         report = delivery.report
         message = EmailMessage(
-            subject=f"文章转载监测周报 {report.period_start.isoformat()} 至 {report.period_end.isoformat()} V{report.version}",
+            subject=(
+                f"文章转载监测周报 {report.period_start.isoformat()} 至 "
+                f"{report.period_end.isoformat()} V{report.version}"
+            ),
             body="附件为系统生成的周报。",
             from_email=config.from_email,
             to=list(delivery.recipients),
@@ -67,7 +70,11 @@ def send_delivery(delivery: ReportEmailDelivery) -> None:
             connection=connection,
         )
         with report.report_file.open("rb") as report_file:
-            message.attach(report.report_file.name.rsplit("/", maxsplit=1)[-1], report_file.read(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            message.attach(
+                report.report_file.name.rsplit("/", maxsplit=1)[-1],
+                report_file.read(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
         message.send()
         delivery.status = DeliveryStatus.SENT
         delivery.error_message = ""

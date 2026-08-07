@@ -123,8 +123,9 @@ def test_email_delivery_uses_decrypted_secret_without_exposing_it(operator: User
     delivery = ReportEmailDelivery.objects.create(report=report, recipients=["recipient@example.test"])
     connection = Mock()
     message = Mock()
-    with patch("apps.reports.mail_services.get_connection", return_value=connection), patch(
-        "apps.reports.mail_services.EmailMessage", return_value=message
+    with (
+        patch("apps.reports.mail_services.get_connection", return_value=connection),
+        patch("apps.reports.mail_services.EmailMessage", return_value=message),
     ):
         send_delivery(delivery)
     delivery.refresh_from_db()

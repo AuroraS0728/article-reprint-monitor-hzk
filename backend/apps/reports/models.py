@@ -6,7 +6,7 @@ from django.conf import settings
 from django.db import models
 
 
-def report_upload_path(instance: "GeneratedReport", filename: str) -> str:
+def report_upload_path(instance: GeneratedReport, filename: str) -> str:
     return f"generated-reports/{instance.report_type.lower()}/{uuid4().hex}.xlsx"
 
 
