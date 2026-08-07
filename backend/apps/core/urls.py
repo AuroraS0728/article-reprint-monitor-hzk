@@ -20,6 +20,15 @@ from apps.monitoring.views import (
     StatusSnapshotListView,
 )
 from apps.platforms.views import PlatformActionView, PlatformDetailView, PlatformListCreateView
+from apps.reports.views import (
+    EmailDeliveryListView,
+    EmailDeliveryResendView,
+    ReportDownloadView,
+    ReportListView,
+    ReportRegenerateView,
+    SMTPConfigurationView,
+    TestEmailView,
+)
 
 from .views import ChangePasswordView, HealthView, LoginView, LogoutView, MeView, UserDetailView, UserListCreateView
 
@@ -49,4 +58,11 @@ urlpatterns = [
     path("detection-selection-defaults", DetectionSelectionDefaultsView.as_view()),
     path("status-matrix", StatusMatrixView.as_view()),
     path("status-snapshots", StatusSnapshotListView.as_view()),
+    path("reports", ReportListView.as_view()),
+    path("reports/<int:pk>/download", ReportDownloadView.as_view()),
+    path("reports/<int:pk>/regenerate", ReportRegenerateView.as_view()),
+    path("smtp-configuration", SMTPConfigurationView.as_view()),
+    path("report-email-deliveries", EmailDeliveryListView.as_view()),
+    path("report-email-deliveries/<int:pk>/resend", EmailDeliveryResendView.as_view()),
+    path("smtp-configuration/test-email", TestEmailView.as_view()),
 ]

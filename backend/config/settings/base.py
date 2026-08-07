@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "apps.audit",
     "apps.monitoring",
     "apps.reposts",
+    "apps.reports",
     "apps.core",
 ]
 MIDDLEWARE = [
@@ -83,6 +84,7 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 PRIVATE_UPLOAD_ROOT = Path(os.environ.get("PRIVATE_UPLOAD_ROOT", BASE_DIR / "private_uploads"))
 MEDIA_ROOT = PRIVATE_UPLOAD_ROOT
+FIELD_ENCRYPTION_KEY = os.environ.get("FIELD_ENCRYPTION_KEY", "")
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_AGE = 28800

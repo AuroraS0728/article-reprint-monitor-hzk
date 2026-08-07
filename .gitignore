@@ -12,7 +12,7 @@ coverage.xml
 htmlcov/
 staticfiles/
 media/
-reports/
+/reports/
 private_uploads/
 backups/
 secrets/

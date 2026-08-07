@@ -9,6 +9,9 @@ from django.utils import timezone
 
 from apps.articles.models import Article, ArticleStatus
 from apps.platforms.models import Platform, PlatformStatus
+from apps.reports.models import ReportEmailDelivery, ReportType
+from apps.reports.services import create_report
+from apps.reports.tasks import send_report_email
 
 from .batch_services import automatic_idempotency_key, create_batch
 from .models import BatchStatus, DetectionBatch, SnapshotType, TaskFailureLog
@@ -104,6 +107,15 @@ def create_daily_status_snapshot() -> int:
     now = timezone.localtime()
     cutoff_at = timezone.make_aware(datetime.combine(now.date(), time.min))
     snapshot = create_status_snapshot(snapshot_type=SnapshotType.DAILY, cutoff_at=cutoff_at)
+    report_date = now.date() - timedelta(days=1)
+    create_report(
+        report_type=ReportType.DAILY,
+        report_date=report_date,
+        period_start=report_date,
+        period_end=report_date,
+        snapshot=snapshot,
+        generated_by=None,
+    )
     return snapshot.id
 
 
@@ -129,4 +141,23 @@ def create_weekly_status_snapshot(self) -> int:
         )
         raise self.retry(countdown=60, max_retries=30)
     snapshot = create_status_snapshot(snapshot_type=SnapshotType.WEEKLY, cutoff_at=cutoff_at, source_batch=final_batch)
+    previous_week_start = week_start - timedelta(days=7)
+    report = create_report(
+        report_type=ReportType.WEEKLY,
+        report_date=previous_week_start,
+        period_start=previous_week_start,
+        period_end=week_start - timedelta(days=1),
+        snapshot=snapshot,
+        generated_by=None,
+    )
+    from apps.reports.mail_services import smtp_configuration
+
+    config = smtp_configuration()
+    if config.enabled and config.recipients:
+        delivery = ReportEmailDelivery.objects.create(
+            report=report,
+            recipients=list(config.recipients),
+            cc_recipients=list(config.cc_recipients),
+        )
+        send_report_email.delay(delivery.id)
     return snapshot.id
