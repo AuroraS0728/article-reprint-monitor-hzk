@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from io import BytesIO
 from unittest.mock import Mock, patch
 
@@ -27,7 +27,7 @@ def report_source(*, operator: User) -> tuple[StatusSnapshot, Article, Platform]
         created_by=operator,
     )
     platform = Platform.objects.create(code="TEST_REPORT_PLATFORM", name="测试平台", status=PlatformStatus.ENABLED)
-    now = timezone.now()
+    now = timezone.make_aware(datetime(2026, 8, 7, 12, 0, 0))
     snapshot = StatusSnapshot.objects.create(
         snapshot_type=SnapshotType.WEEKLY,
         cutoff_at=now,
