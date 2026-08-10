@@ -19,8 +19,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 RUN apk upgrade --no-cache \
     && apk add --no-cache libgcc libstdc++ mariadb-common mariadb-connector-c \
+    && python -m pip install --no-cache-dir pip==26.1.2 \
     && addgroup -S -g 10001 appuser \
-    && adduser -S -D -H -u 10001 -G appuser appuser
+    && adduser -S -D -u 10001 -h /home/appuser -G appuser appuser
 COPY --from=database-client /usr/bin/mariadb-dump /usr/local/bin/mariadb-dump
 COPY --from=database-client /usr/bin/mysqldump /usr/local/bin/mysqldump
 COPY --from=python-dependencies /install /usr/local
