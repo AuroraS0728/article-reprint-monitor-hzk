@@ -3,11 +3,43 @@ from __future__ import annotations
 from datetime import datetime
 
 from django.db.models import OuterRef, Subquery
+from django.db.models.functions import Coalesce
 
 from apps.reposts.models import RepostRecord
 
 from .batch_services import batch_statistics
 from .models import DetectionBatch, DetectionResult, PlatformDetectionStatus, StatusSnapshot
+
+
+def _apply_historical_reposts(matrix: dict[str, dict[str, object]], *, cutoff_at: datetime | None = None) -> None:
+    records = RepostRecord.objects.filter(is_valid=True, platform_id__isnull=False).annotate(
+        historical_found_at=Coalesce("first_found_at", "first_discovered_at", "created_at")
+    )
+    if cutoff_at is not None:
+        records = records.filter(historical_found_at__lte=cutoff_at)
+
+    pairs: dict[tuple[int, int], str] = {}
+    for article_id, platform_id, data_source in records.values_list("article_id", "platform_id", "data_source"):
+        if platform_id is None:
+            continue
+        pair_key = (article_id, platform_id)
+        if pair_key not in pairs or data_source == "MANUAL_SUPPLEMENT":
+            pairs[pair_key] = data_source
+
+    for (article_id, platform_id), data_source in pairs.items():
+        cell_key = f"{article_id}:{platform_id}"
+        item = matrix.get(
+            cell_key,
+            {
+                "result_id": None,
+                "article_id": article_id,
+                "platform_id": platform_id,
+                "completed_at": None,
+            },
+        )
+        item["status"] = PlatformDetectionStatus.FOUND
+        item["reason_code"] = "MANUAL_SUPPLEMENT" if data_source == "MANUAL_SUPPLEMENT" else "HISTORICAL_REPOST"
+        matrix[cell_key] = item
 
 
 def matrix_data_as_of(*, cutoff_at: datetime | None = None) -> dict[str, dict[str, object]]:
@@ -27,18 +59,7 @@ def matrix_data_as_of(*, cutoff_at: datetime | None = None) -> dict[str, dict[st
         }
         for row in rows
     }
-    manual_records = RepostRecord.objects.filter(data_source="MANUAL_SUPPLEMENT", is_valid=True)
-    if cutoff_at is not None:
-        manual_records = manual_records.filter(manually_added_at__lte=cutoff_at)
-    for article_id, platform_id in manual_records.values_list("article_id", "platform_id").distinct():
-        key = f"{article_id}:{platform_id}"
-        item = matrix.get(
-            key,
-            {"result_id": None, "article_id": article_id, "platform_id": platform_id, "completed_at": None},
-        )
-        item["status"] = PlatformDetectionStatus.FOUND
-        item["reason_code"] = "MANUAL_SUPPLEMENT"
-        matrix[key] = item
+    _apply_historical_reposts(matrix, cutoff_at=cutoff_at)
     return matrix
 
 
@@ -61,8 +82,9 @@ def create_status_snapshot(
                 "reason_code": row.reason_code,
                 "completed_at": row.completed_at.isoformat() if row.completed_at else None,
             }
+        _apply_historical_reposts(matrix_data, cutoff_at=cutoff_at)
     statistics_data = (
-        batch_statistics(source_batch)
+        batch_statistics(source_batch, cutoff_at=cutoff_at)
         if source_batch
         else {
             "article_total": len({item["article_id"] for item in matrix_data.values()}),

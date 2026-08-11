@@ -79,6 +79,25 @@ def no_validated_adapter(*, article: Article, platform: Platform) -> SearchOutco
 def evaluate_detection(*, result: DetectionResult, adapter: PlatformAdapter | None = None) -> DetectionResult:
     article = result.article
     platform = result.platform
+    if RepostRecord.objects.filter(article=article, platform=platform, is_valid=True).exists():
+        now = timezone.now()
+        result.status = PlatformDetectionStatus.FOUND
+        result.reason_code = "HISTORICAL_REPOST"
+        result.reason_message = ""
+        result.started_at = now
+        result.completed_at = now
+        result.save(
+            update_fields=[
+                "status",
+                "reason_code",
+                "reason_message",
+                "started_at",
+                "completed_at",
+                "updated_at",
+            ]
+        )
+        return result
+
     result.attempt_count += 1
     result.started_at = timezone.now()
     search = (
