@@ -14,13 +14,16 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.articles.models import Article, ArticleIngestMethod, ArticleMonitoringStatus
 from apps.reposts.export_services import (
+    EXCEL_DATETIME_FORMAT,
     GlobalExportFilters,
     build_global_repost_workbook,
+    filtered_articles,
     sanitize_excel_sheet_name,
 )
 from apps.reposts.models import RepostRecord
 from apps.sources.models import SearchRunStatus, Source
 from apps.sources.services import (
+    _next_search_time,
     canonicalize_http_url,
     compare_titles,
     ingest_source_article,
@@ -287,11 +290,108 @@ def test_dynamic_export_keeps_removed_links_and_creates_safe_site_sheets(source:
     assert not INVALID_SHEET_CHARACTERS_FOR_TEST.search(workbook.sheetnames[1])
     assert "共2条" in workbook["数据"]["I2"].value
     assert workbook["数据"]["I2"].hyperlink.target == "https://news.example.com/a"
+    assert workbook["数据"]["E2"].value == "监测中"
+    assert workbook["数据"]["A2"].number_format == EXCEL_DATETIME_FORMAT
+    assert workbook["数据"]["F2"].number_format == EXCEL_DATETIME_FORMAT
     site_sheet = workbook[workbook.sheetnames[1]]
     assert site_sheet.max_row == 3
     assert site_sheet["J2"].value == "已删除"
+    assert site_sheet["H2"].number_format == EXCEL_DATETIME_FORMAT
     assert site_sheet["B2"].hyperlink.target == "https://news.example.com/a"
     assert workbook["总统计"]["F2"].value == "√"
+    assert workbook["统计汇总"]["C2"].number_format == EXCEL_DATETIME_FORMAT
+
+
+@pytest.mark.django_db
+def test_export_filters_use_the_same_as_of_for_repost_existence(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    export_as_of = timezone.now()
+    record = RepostRecord.objects.create(
+        article=article,
+        site_name="并发网站",
+        site_domain="concurrent.example.com",
+        raw_url="https://concurrent.example.com/repost",
+        canonical_url="https://concurrent.example.com/repost",
+        canonical_url_hash="a" * 64,
+        original_url="https://concurrent.example.com/repost",
+        normalized_url="https://concurrent.example.com/repost",
+        normalized_url_hash="a" * 64,
+        repost_title=article.title,
+        result_title=article.title,
+        first_discovered_at=export_as_of,
+        first_found_at=export_as_of,
+        last_checked_at=export_as_of,
+        last_seen_at=export_as_of,
+        data_source="TEST_ONLY",
+    )
+    RepostRecord.objects.filter(id=record.id).update(created_at=export_as_of + timedelta(seconds=1))
+
+    assert (
+        not filtered_articles(GlobalExportFilters(has_repost=True), as_of=export_as_of).filter(id=article.id).exists()
+    )
+    assert filtered_articles(GlobalExportFilters(has_repost=False), as_of=export_as_of).filter(id=article.id).exists()
+    assert (
+        not filtered_articles(GlobalExportFilters(site_domain="concurrent.example.com"), as_of=export_as_of)
+        .filter(id=article.id)
+        .exists()
+    )
+
+
+@pytest.mark.django_db
+def test_export_link_totals_are_unique_per_article_and_url(source: Source, operator: User) -> None:
+    first = create_source_article(source=source, operator=operator)
+    second = Article.objects.create(
+        title="第二篇文章",
+        normalized_title="第二篇文章",
+        published_date=timezone.localdate(),
+        published_at=timezone.now(),
+        monitoring_status=ArticleMonitoringStatus.COMPLETED,
+        created_by=operator,
+    )
+    now = timezone.now()
+    shared_url = "https://shared.example.com/repost"
+    for article in (first, second):
+        RepostRecord.objects.create(
+            article=article,
+            site_name="共享网站",
+            site_domain="shared.example.com",
+            raw_url=shared_url,
+            canonical_url=shared_url,
+            canonical_url_hash="b" * 64,
+            original_url=shared_url,
+            normalized_url=shared_url,
+            normalized_url_hash="b" * 64,
+            repost_title=article.title,
+            result_title=article.title,
+            first_discovered_at=now,
+            first_found_at=now,
+            last_checked_at=now,
+            last_seen_at=now,
+            data_source="TEST_ONLY",
+        )
+
+    content, _ = build_global_repost_workbook(GlobalExportFilters(site_domain="shared.example.com"))
+    workbook = load_workbook(BytesIO(content))
+    summary = workbook["统计汇总"]
+    summary_values = {summary.cell(row, 1).value: summary.cell(row, 2).value for row in range(2, 7)}
+    assert summary_values["转载链接总数"] == 2
+    assert summary.cell(9, 4).value == 2
+
+
+@pytest.mark.django_db
+@override_settings(
+    ARTICLE_SEARCH_SCHEDULE_MINUTES=(0, 15, 30, 60, 120, 240, 480),
+    ARTICLE_SEARCH_REPEAT_MINUTES=720,
+)
+def test_search_schedule_repeats_every_twelve_hours_after_eight_hours(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    started = timezone.now().replace(second=0, microsecond=0)
+    article.monitor_started_at = started
+    article.monitor_until = started + timedelta(days=7)
+
+    assert _next_search_time(article, started + timedelta(hours=8)) == started + timedelta(hours=20)
+    assert _next_search_time(article, started + timedelta(hours=19)) == started + timedelta(hours=20)
+    assert _next_search_time(article, started + timedelta(hours=20)) == started + timedelta(hours=32)
 
 
 INVALID_SHEET_CHARACTERS_FOR_TEST = __import__("re").compile(r"[:\\/?*\[\]]")
