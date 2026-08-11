@@ -132,9 +132,10 @@ ARTICLE_MONITOR_DAYS = int(os.environ.get("ARTICLE_MONITOR_DAYS", "7"))
 ARTICLE_RETENTION_DAYS = int(os.environ.get("ARTICLE_RETENTION_DAYS", "365"))
 ARTICLE_SEARCH_SCHEDULE_MINUTES = tuple(
     int(value)
-    for value in os.environ.get("ARTICLE_SEARCH_SCHEDULE_MINUTES", "0,15,30,60,120,240,480,720").split(",")
+    for value in os.environ.get("ARTICLE_SEARCH_SCHEDULE_MINUTES", "0,15,30,60,120,240,480").split(",")
     if value.strip()
 )
+ARTICLE_SEARCH_REPEAT_MINUTES = int(os.environ.get("ARTICLE_SEARCH_REPEAT_MINUTES", "720"))
 CELERY_TASK_DEFAULT_QUEUE = "http"
 CELERY_TASK_ROUTES = {
     "apps.sources.tasks.search_article_reposts": {"queue": "search"},

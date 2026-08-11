@@ -24,4 +24,4 @@
 
 ## 调度
 
-新文章立即调度一次搜索。Celery Beat 每 5 分钟扫描 `next_search_at`，仅下发当前到期文章；不为 7 天生命周期创建大量 ETA 任务。每篇文章使用 Redis 并发锁，监测到 `published_at + 7 days`；清理到 `published_at + 365 days`。
+新文章立即调度一次搜索，之后按 15 分钟、30 分钟、1 小时、2 小时、4 小时、8 小时执行；8 小时后以首次监测时间为锚点每 12 小时执行，即 20 小时、32 小时、44 小时……。Celery Beat 每 5 分钟扫描 `next_search_at`，仅下发当前到期文章；不为 7 天生命周期创建大量 ETA 任务。每篇文章使用 Redis 并发锁，监测到 `published_at + 7 days`；清理到 `published_at + 365 days`。

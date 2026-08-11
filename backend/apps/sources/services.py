@@ -244,6 +244,10 @@ def _next_search_time(article: Article, now: datetime) -> datetime | None:
     elapsed_minutes = max(0, int((now - started).total_seconds() // 60))
     offsets = settings.ARTICLE_SEARCH_SCHEDULE_MINUTES
     next_offset = next((value for value in offsets if value > elapsed_minutes), None)
+    if next_offset is None and offsets:
+        repeat_minutes = settings.ARTICLE_SEARCH_REPEAT_MINUTES
+        intervals = ((elapsed_minutes - offsets[-1]) // repeat_minutes) + 1
+        next_offset = offsets[-1] + intervals * repeat_minutes
     candidate = started + timedelta(minutes=next_offset) if next_offset is not None else now + timedelta(hours=12)
     return min(candidate, article.monitor_until)
 
