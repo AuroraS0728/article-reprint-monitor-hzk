@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
-import { api } from "./api";
+import { api, downloadApiFile } from "./api";
 
 type Article = { id: number; title: string; published_date: string };
 type Platform = { id: number; name: string; status: string };
@@ -22,6 +22,7 @@ const repostDialogOpen = ref(false);
 const repostLoading = ref(false);
 const loading = ref(true);
 const submitting = ref(false);
+const exporting = ref(false);
 const error = ref("");
 let refreshTimer: number | undefined;
 
@@ -94,6 +95,24 @@ async function createBatch(automatic: boolean): Promise<void> {
   }
 }
 
+async function exportExcel(): Promise<void> {
+  exporting.value = true;
+  error.value = "";
+  try {
+    const query = new URLSearchParams();
+    if (dateRange.value) {
+      query.set("start_date", dateRange.value[0]);
+      query.set("end_date", dateRange.value[1]);
+    }
+    if (selectedArticleIds.value.length === 1) query.set("article_id", String(selectedArticleIds.value[0]));
+    await downloadApiFile(`/repost-monitor/export.xlsx${query.size ? `?${query.toString()}` : ""}`);
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : "Excel 生成失败";
+  } finally {
+    exporting.value = false;
+  }
+}
+
 onMounted(async () => {
   await load();
   refreshTimer = window.setInterval(() => void load(), 5 * 60 * 1000);
@@ -130,6 +149,7 @@ onBeforeUnmount(() => {
         <el-button type="primary" :loading="submitting" @click="createBatch(false)">立即检测一次</el-button>
         <el-button :loading="submitting" @click="createBatch(true)">创建自动检测批次</el-button>
         <el-button @click="load">刷新后台已有数据</el-button>
+        <el-button type="success" :loading="exporting" @click="exportExcel">{{ exporting ? "正在生成..." : "导出 Excel" }}</el-button>
       </el-form>
       <h2>检测批次</h2>
       <el-empty v-if="!batches.length" description="尚未创建检测批次。" />
