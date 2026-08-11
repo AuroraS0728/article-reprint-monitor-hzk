@@ -42,6 +42,67 @@ class SourceIngestToken(models.Model):
         ordering = ["-created_at", "-id"]
 
 
+class ArticleIngestConflictStatus(models.TextChoices):
+    PENDING = "PENDING", "待人工确认"
+    APPROVED_AS_NEW = "APPROVED_AS_NEW", "批准为独立文章"
+    LINKED_TO_EXISTING = "LINKED_TO_EXISTING", "关联到已有文章"
+    REJECTED = "REJECTED", "已拒绝"
+
+
+class ArticleIngestConflict(models.Model):
+    source = models.ForeignKey(Source, related_name="article_ingest_conflicts", on_delete=models.PROTECT)
+    existing_article = models.ForeignKey("articles.Article", related_name="source_conflicts", on_delete=models.PROTECT)
+    created_article = models.ForeignKey(
+        "articles.Article",
+        related_name="approved_source_conflicts",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+    )
+    linked_article = models.ForeignKey(
+        "articles.Article",
+        related_name="linked_source_conflicts",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+    )
+    title = models.CharField(max_length=500)
+    normalized_title = models.CharField(max_length=500, db_index=True)
+    author = models.CharField(max_length=255)
+    published_at = models.DateTimeField()
+    published_date = models.DateField(db_index=True)
+    original_url = models.URLField(max_length=2048)
+    canonical_original_url = models.URLField(max_length=2048)
+    source_item_key = models.CharField(max_length=128)
+    status = models.CharField(
+        max_length=32,
+        choices=ArticleIngestConflictStatus.choices,
+        default=ArticleIngestConflictStatus.PENDING,
+        db_index=True,
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="created_article_ingest_conflicts", on_delete=models.PROTECT
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="reviewed_article_ingest_conflicts",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        db_table = "sources_article_ingest_conflict"
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["source", "source_item_key"], name="uniq_source_ingest_conflict_item")
+        ]
+
+
 class SearchRunStatus(models.TextChoices):
     PENDING = "PENDING", "待执行"
     RUNNING = "RUNNING", "执行中"

@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.http import HttpRequest
 
-from .models import SearchRun, Source, SourceIngestToken
+from .models import ArticleIngestConflict, SearchRun, Source, SourceIngestToken
 
 
 @admin.register(Source)
@@ -25,3 +25,11 @@ class SourceIngestTokenAdmin(admin.ModelAdmin):
 class SearchRunAdmin(admin.ModelAdmin):
     list_display = ("article", "provider", "status", "candidate_count", "matched_count", "created_at")
     readonly_fields = ("created_at",)
+
+
+@admin.register(ArticleIngestConflict)
+class ArticleIngestConflictAdmin(admin.ModelAdmin):
+    list_display = ("id", "source", "existing_article", "status", "created_at", "reviewed_at")
+    list_filter = ("status", "source")
+    search_fields = ("title", "normalized_title", "canonical_original_url", "source_item_key")
+    readonly_fields = ("created_at", "updated_at")

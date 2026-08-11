@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
-from datetime import date
+from datetime import date, datetime
 from typing import cast
 
 from django.db import transaction
+from django.db.models.functions import Coalesce
 
 from apps.articles.models import Article, ArticleStatus
 from apps.platforms.models import Platform, PlatformStatus
@@ -63,16 +64,16 @@ def automatic_idempotency_key(*, week: str, hour: str) -> str:
     return hashlib.sha256(f"automatic:{week}:{hour}".encode()).hexdigest()
 
 
-def batch_statistics(batch: DetectionBatch) -> dict[str, object]:
+def batch_statistics(batch: DetectionBatch, *, cutoff_at: datetime | None = None) -> dict[str, object]:
     results = list(batch.results.values("article_id", "platform_id", "status"))
-    manual_pairs = set(
-        RepostRecord.objects.filter(
-            article_id__in=batch.article_ids,
-            platform_id__in=batch.platform_ids,
-            data_source="MANUAL_SUPPLEMENT",
-            is_valid=True,
-        ).values_list("article_id", "platform_id")
-    )
+    historical_reposts = RepostRecord.objects.filter(
+        article_id__in=batch.article_ids,
+        platform_id__in=batch.platform_ids,
+        is_valid=True,
+    ).annotate(historical_found_at=Coalesce("first_found_at", "first_discovered_at", "created_at"))
+    if cutoff_at is not None:
+        historical_reposts = historical_reposts.filter(historical_found_at__lte=cutoff_at)
+    historical_pairs = set(historical_reposts.values_list("article_id", "platform_id"))
     platform_total = len(batch.platform_ids)
     article_total = len(batch.article_ids)
     per_article: list[dict[str, object]] = []
@@ -80,11 +81,12 @@ def batch_statistics(batch: DetectionBatch) -> dict[str, object]:
         article_results = [item for item in results if item["article_id"] == article_id]
         result_by_platform = {cast(int, item["platform_id"]): cast(str, item["status"]) for item in article_results}
         found = sum(
-            result_by_platform.get(platform_id) == "FOUND" or (article_id, platform_id) in manual_pairs
+            result_by_platform.get(platform_id) == "FOUND" or (article_id, platform_id) in historical_pairs
             for platform_id in batch.platform_ids
         )
         completed = sum(
-            result_by_platform.get(platform_id) in {"FOUND", "NOT_FOUND"} or (article_id, platform_id) in manual_pairs
+            result_by_platform.get(platform_id) in {"FOUND", "NOT_FOUND"}
+            or (article_id, platform_id) in historical_pairs
             for platform_id in batch.platform_ids
         )
         per_article.append(
@@ -98,7 +100,8 @@ def batch_statistics(batch: DetectionBatch) -> dict[str, object]:
         )
     reposted_articles = sum(cast(int, item["reposted_platform_count"]) > 0 for item in per_article)
     completed_cells = sum(item["status"] in {"FOUND", "NOT_FOUND"} for item in results) + sum(
-        item["status"] == "UNKNOWN" and (cast(int, item["article_id"]), cast(int, item["platform_id"])) in manual_pairs
+        item["status"] == "UNKNOWN"
+        and (cast(int, item["article_id"]), cast(int, item["platform_id"])) in historical_pairs
         for item in results
     )
     return {

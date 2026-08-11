@@ -19,7 +19,12 @@ from rapidfuzz import fuzz
 
 from apps.accounts.models import User
 from apps.articles.models import Article, ArticleIngestMethod, ArticleMonitoringStatus
-from apps.articles.services import normalize_title
+from apps.articles.services import (
+    ArticleDuplicateError,
+    create_approved_duplicate,
+    create_standard_article,
+    normalize_title,
+)
 from apps.audit.models import OperationLog
 from apps.core.redaction import safe_error_message
 from apps.reposts.models import RepostRecord
@@ -28,7 +33,13 @@ from search_providers.exceptions import SearchProviderError
 from search_providers.registry import configured_search_provider
 from search_providers.types import SearchCandidate
 
-from .models import SearchRun, SearchRunStatus, Source
+from .models import (
+    ArticleIngestConflict,
+    ArticleIngestConflictStatus,
+    SearchRun,
+    SearchRunStatus,
+    Source,
+)
 
 TRACKING_QUERY_KEYS = {
     "utm_source",
@@ -45,10 +56,14 @@ TITLE_PUNCTUATION_RE = re.compile(r"[\s\t\r\n:：,，。.!！?？\"'“”‘’
 
 @dataclass(frozen=True)
 class IngestArticleResult:
-    article: Article
+    article: Article | None
     created: bool
     updated: bool
     search_scheduled: bool
+    pending_review: bool = False
+    conflict: ArticleIngestConflict | None = None
+    conflict_created: bool = False
+    reason_code: str = ""
 
 
 @dataclass(frozen=True)
@@ -161,6 +176,141 @@ def _monitoring_fields(published_at: datetime, now: datetime) -> MonitoringLifec
     )
 
 
+def _source_article_data(
+    *, source: Source, title: str, author: str, published_at: datetime, canonical_url: str, key: str, now: datetime
+) -> dict[str, Any]:
+    lifecycle = _monitoring_fields(published_at, now)
+    return {
+        "title": title,
+        "author": author,
+        "published_at": published_at,
+        "published_date": timezone.localtime(published_at).date(),
+        "original_url": canonical_url,
+        "source_platform": source.name,
+        "author_department": author,
+        "discovered_at": now,
+        "ingest_method": ArticleIngestMethod.SOURCE_API,
+        "source": source,
+        "source_item_key": key,
+        "monitor_started_at": lifecycle.monitor_started_at,
+        "monitor_until": lifecycle.monitor_until,
+        "retention_until": lifecycle.retention_until,
+        "monitoring_status": lifecycle.monitoring_status,
+        "next_search_at": lifecycle.next_search_at,
+    }
+
+
+def _update_existing_source_article(
+    *, article: Article, title: str, author: str, published_at: datetime, canonical_url: str, now: datetime
+) -> tuple[bool, bool]:
+    updated = False
+    changes = {
+        "title": title,
+        "normalized_title": normalize_title(title),
+        "author": author,
+        "author_department": author,
+        "published_at": published_at,
+        "published_date": timezone.localtime(published_at).date(),
+        "original_url": canonical_url,
+    }
+    title_changed = article.title != title
+    update_fields: list[str] = []
+    for field, value in changes.items():
+        if getattr(article, field) != value:
+            setattr(cast(Any, article), field, value)
+            update_fields.append(field)
+    if "published_at" in update_fields:
+        lifecycle = _monitoring_fields(published_at, now)
+        for field in ("monitor_until", "retention_until"):
+            setattr(article, field, getattr(lifecycle, field))
+            update_fields.append(field)
+        if article.monitoring_status != ArticleMonitoringStatus.COMPLETED:
+            article.monitoring_status = lifecycle.monitoring_status
+            article.next_search_at = lifecycle.next_search_at
+            update_fields.extend(["monitoring_status", "next_search_at"])
+    if title_changed and article.monitoring_status == ArticleMonitoringStatus.ACTIVE:
+        article.next_search_at = now
+        if "next_search_at" not in update_fields:
+            update_fields.append("next_search_at")
+    if update_fields:
+        article.save(update_fields=[*dict.fromkeys(update_fields), "updated_at"])
+        updated = True
+    return updated, title_changed
+
+
+def _schedule_source_search(article: Article, *, should_schedule: bool) -> bool:
+    search_scheduled = bool(article.monitoring_status == ArticleMonitoringStatus.ACTIVE and should_schedule)
+    if search_scheduled:
+        from .tasks import search_article_reposts
+
+        transaction.on_commit(lambda: search_article_reposts.delay(article.id))
+    return search_scheduled
+
+
+def _pending_conflict_result(conflict: ArticleIngestConflict, *, created: bool) -> IngestArticleResult:
+    return IngestArticleResult(
+        article=None,
+        created=False,
+        updated=False,
+        search_scheduled=False,
+        pending_review=True,
+        conflict=conflict,
+        conflict_created=created,
+        reason_code="DUPLICATE_REVIEW_REQUIRED",
+    )
+
+
+def _create_or_reuse_source_conflict(
+    *,
+    source: Source,
+    existing_article: Article,
+    title: str,
+    author: str,
+    published_at: datetime,
+    canonical_url: str,
+    key: str,
+    created_by: User,
+) -> IngestArticleResult:
+    conflict, created = ArticleIngestConflict.objects.get_or_create(
+        source=source,
+        source_item_key=key,
+        defaults={
+            "existing_article": existing_article,
+            "title": title,
+            "normalized_title": normalize_title(title),
+            "author": author,
+            "published_at": published_at,
+            "published_date": timezone.localtime(published_at).date(),
+            "original_url": canonical_url,
+            "canonical_original_url": canonical_url,
+            "created_by": created_by,
+        },
+    )
+    if not created and conflict.status == ArticleIngestConflictStatus.PENDING:
+        conflict.existing_article = existing_article
+        conflict.title = title
+        conflict.normalized_title = normalize_title(title)
+        conflict.author = author
+        conflict.published_at = published_at
+        conflict.published_date = timezone.localtime(published_at).date()
+        conflict.original_url = canonical_url
+        conflict.canonical_original_url = canonical_url
+        conflict.save(
+            update_fields=[
+                "existing_article",
+                "title",
+                "normalized_title",
+                "author",
+                "published_at",
+                "published_date",
+                "original_url",
+                "canonical_original_url",
+                "updated_at",
+            ]
+        )
+    return _pending_conflict_result(conflict, created=created)
+
+
 @transaction.atomic
 def ingest_source_article(
     *, source: Source, title: str, author: str, published_at: datetime, original_url: str, created_by: User
@@ -170,71 +320,217 @@ def ingest_source_article(
         raise ValueError("原文章 URL 不属于 Token 对应的原创来源。")
     key = source_item_key(source, canonical_url)
     now = timezone.now()
-    local_published_at = timezone.localtime(published_at)
-    lifecycle = _monitoring_fields(published_at, now)
-    defaults = {
-        "title": title,
-        "normalized_title": normalize_title(title),
-        "author": author,
-        "published_at": published_at,
-        "published_date": local_published_at.date(),
-        "original_url": canonical_url,
-        "source_platform": source.name,
-        "author_department": author,
-        "discovered_at": now,
-        "ingest_method": ArticleIngestMethod.SOURCE_API,
-        "created_by": created_by,
-        "monitor_started_at": lifecycle.monitor_started_at,
-        "monitor_until": lifecycle.monitor_until,
-        "retention_until": lifecycle.retention_until,
-        "monitoring_status": lifecycle.monitoring_status,
-        "next_search_at": lifecycle.next_search_at,
-    }
-    article, created = Article.objects.select_for_update().get_or_create(
-        source=source,
-        source_item_key=key,
-        defaults=defaults,
-    )
-    updated = False
-    title_changed = False
-    if not created:
-        changes = {
-            "title": title,
-            "normalized_title": normalize_title(title),
-            "author": author,
-            "author_department": author,
-            "published_at": published_at,
-            "published_date": local_published_at.date(),
-            "original_url": canonical_url,
-        }
-        title_changed = article.title != title
-        update_fields: list[str] = []
-        for field, value in changes.items():
-            if getattr(article, field) != value:
-                setattr(cast(Any, article), field, value)
-                update_fields.append(field)
-        if "published_at" in update_fields:
-            lifecycle = _monitoring_fields(published_at, now)
-            for field in ("monitor_until", "retention_until"):
-                setattr(article, field, getattr(lifecycle, field))
-                update_fields.append(field)
-            if article.monitoring_status != ArticleMonitoringStatus.COMPLETED:
-                article.monitoring_status = lifecycle.monitoring_status
-                article.next_search_at = lifecycle.next_search_at
-                update_fields.extend(["monitoring_status", "next_search_at"])
-        if title_changed and article.monitoring_status == ArticleMonitoringStatus.ACTIVE:
-            article.next_search_at = now
-            if "next_search_at" not in update_fields:
-                update_fields.append("next_search_at")
-        if update_fields:
-            article.save(update_fields=[*dict.fromkeys(update_fields), "updated_at"])
-            updated = True
-    search_scheduled = bool(article.monitoring_status == ArticleMonitoringStatus.ACTIVE and (created or title_changed))
-    if search_scheduled:
-        from .tasks import search_article_reposts
+    normalized_title = normalize_title(title)
+    published_date = timezone.localtime(published_at).date()
 
-        transaction.on_commit(lambda: search_article_reposts.delay(article.id))
-    return IngestArticleResult(article=article, created=created, updated=updated, search_scheduled=search_scheduled)
+    article = Article.objects.select_for_update().filter(source=source, source_item_key=key).first()
+    if article is not None:
+        updated, title_changed = _update_existing_source_article(
+            article=article,
+            title=title,
+            author=author,
+            published_at=published_at,
+            canonical_url=canonical_url,
+            now=now,
+        )
+        return IngestArticleResult(
+            article=article,
+            created=False,
+            updated=updated,
+            search_scheduled=_schedule_source_search(article, should_schedule=title_changed),
+        )
+
+    prior_conflict = (
+        ArticleIngestConflict.objects.select_for_update()
+        .select_related("created_article", "linked_article")
+        .filter(source=source, source_item_key=key)
+        .first()
+    )
+    if prior_conflict is not None:
+        if prior_conflict.status == ArticleIngestConflictStatus.PENDING:
+            return _create_or_reuse_source_conflict(
+                source=source,
+                existing_article=prior_conflict.existing_article,
+                title=title,
+                author=author,
+                published_at=published_at,
+                canonical_url=canonical_url,
+                key=key,
+                created_by=created_by,
+            )
+        resolved_article = prior_conflict.created_article or prior_conflict.linked_article
+        return IngestArticleResult(
+            article=resolved_article,
+            created=False,
+            updated=False,
+            search_scheduled=False,
+            conflict=prior_conflict,
+            reason_code=prior_conflict.status,
+        )
+
+    duplicate = (
+        Article.objects.select_for_update()
+        .filter(normalized_title=normalized_title, published_date=published_date)
+        .order_by("duplicate_slot", "id")
+        .first()
+    )
+    if duplicate is not None:
+        return _create_or_reuse_source_conflict(
+            source=source,
+            existing_article=duplicate,
+            title=title,
+            author=author,
+            published_at=published_at,
+            canonical_url=canonical_url,
+            key=key,
+            created_by=created_by,
+        )
+
+    article_data = _source_article_data(
+        source=source,
+        title=title,
+        author=author,
+        published_at=published_at,
+        canonical_url=canonical_url,
+        key=key,
+        now=now,
+    )
+    try:
+        article = create_standard_article(data=article_data, created_by=created_by)
+    except ArticleDuplicateError:
+        article = Article.objects.filter(source=source, source_item_key=key).first()
+        if article is not None:
+            updated, title_changed = _update_existing_source_article(
+                article=article,
+                title=title,
+                author=author,
+                published_at=published_at,
+                canonical_url=canonical_url,
+                now=now,
+            )
+            return IngestArticleResult(
+                article=article,
+                created=False,
+                updated=updated,
+                search_scheduled=_schedule_source_search(article, should_schedule=title_changed),
+            )
+        duplicate = Article.objects.filter(
+            normalized_title=normalized_title,
+            published_date=published_date,
+        ).first()
+        if duplicate is None:
+            raise
+        return _create_or_reuse_source_conflict(
+            source=source,
+            existing_article=duplicate,
+            title=title,
+            author=author,
+            published_at=published_at,
+            canonical_url=canonical_url,
+            key=key,
+            created_by=created_by,
+        )
+    except IntegrityError:
+        article = Article.objects.filter(source=source, source_item_key=key).first()
+        if article is None:
+            raise
+        updated, title_changed = _update_existing_source_article(
+            article=article,
+            title=title,
+            author=author,
+            published_at=published_at,
+            canonical_url=canonical_url,
+            now=now,
+        )
+        return IngestArticleResult(
+            article=article,
+            created=False,
+            updated=updated,
+            search_scheduled=_schedule_source_search(article, should_schedule=title_changed),
+        )
+    return IngestArticleResult(
+        article=article,
+        created=True,
+        updated=False,
+        search_scheduled=_schedule_source_search(article, should_schedule=True),
+    )
+
+
+def approve_source_ingest_conflict(
+    *, conflict_id: int, approved_by: User, review_reason: str
+) -> tuple[ArticleIngestConflict, Article]:
+    reason = review_reason.strip()
+    if not reason:
+        raise ValueError("审核原因不能为空。")
+    with transaction.atomic():
+        conflict = ArticleIngestConflict.objects.select_for_update().select_related("source").get(pk=conflict_id)
+        if conflict.status != ArticleIngestConflictStatus.PENDING:
+            raise ValueError("该 Source Ingest Conflict 已处理。")
+        now = timezone.now()
+        article_data = _source_article_data(
+            source=conflict.source,
+            title=conflict.title,
+            author=conflict.author,
+            published_at=conflict.published_at,
+            canonical_url=conflict.canonical_original_url,
+            key=conflict.source_item_key,
+            now=now,
+        )
+        article = create_approved_duplicate(
+            data=article_data,
+            approved_by=approved_by,
+            duplicate_reason=reason,
+        )
+        conflict.status = ArticleIngestConflictStatus.APPROVED_AS_NEW
+        conflict.created_article = article
+        conflict.reviewed_by = approved_by
+        conflict.reviewed_at = now
+        conflict.review_reason = reason
+        conflict.save(
+            update_fields=[
+                "status",
+                "created_article",
+                "reviewed_by",
+                "reviewed_at",
+                "review_reason",
+                "updated_at",
+            ]
+        )
+        _schedule_source_search(article, should_schedule=True)
+        return conflict, article
+
+
+def link_source_ingest_conflict(
+    *, conflict_id: int, linked_article: Article, reviewed_by: User, review_reason: str
+) -> ArticleIngestConflict:
+    reason = review_reason.strip()
+    if not reason:
+        raise ValueError("审核原因不能为空。")
+    with transaction.atomic():
+        conflict = ArticleIngestConflict.objects.select_for_update().get(pk=conflict_id)
+        if conflict.status != ArticleIngestConflictStatus.PENDING:
+            raise ValueError("该 Source Ingest Conflict 已处理。")
+        if (
+            linked_article.normalized_title != conflict.normalized_title
+            or linked_article.published_date != conflict.published_date
+        ):
+            raise ValueError("只能关联同日同标准化标题的 Article。")
+        conflict.status = ArticleIngestConflictStatus.LINKED_TO_EXISTING
+        conflict.linked_article = linked_article
+        conflict.reviewed_by = reviewed_by
+        conflict.reviewed_at = timezone.now()
+        conflict.review_reason = reason
+        conflict.save(
+            update_fields=[
+                "status",
+                "linked_article",
+                "reviewed_by",
+                "reviewed_at",
+                "review_reason",
+                "updated_at",
+            ]
+        )
+        return conflict
 
 
 def _next_search_time(article: Article, now: datetime) -> datetime | None:
@@ -244,6 +540,10 @@ def _next_search_time(article: Article, now: datetime) -> datetime | None:
     elapsed_minutes = max(0, int((now - started).total_seconds() // 60))
     offsets = settings.ARTICLE_SEARCH_SCHEDULE_MINUTES
     next_offset = next((value for value in offsets if value > elapsed_minutes), None)
+    if next_offset is None and offsets:
+        repeat_minutes = settings.ARTICLE_SEARCH_REPEAT_MINUTES
+        intervals = ((elapsed_minutes - offsets[-1]) // repeat_minutes) + 1
+        next_offset = offsets[-1] + intervals * repeat_minutes
     candidate = started + timedelta(minutes=next_offset) if next_offset is not None else now + timedelta(hours=12)
     return min(candidate, article.monitor_until)
 

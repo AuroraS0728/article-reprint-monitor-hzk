@@ -66,6 +66,17 @@ class Article(models.Model):
         default=ArticleIngestMethod.MANUAL,
         db_index=True,
     )
+    duplicate_slot = models.PositiveIntegerField(default=0, editable=False)
+    duplicate_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        editable=False,
+        related_name="approved_duplicate_articles",
+        on_delete=models.SET_NULL,
+    )
+    duplicate_approved_at = models.DateTimeField(null=True, blank=True, editable=False)
+    duplicate_reason = models.TextField(blank=True, default="", editable=False)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -74,6 +85,10 @@ class Article(models.Model):
         db_table = "article_article"
         constraints = [
             models.UniqueConstraint(fields=["source", "source_item_key"], name="uniq_source_article_item"),
+            models.UniqueConstraint(
+                fields=["normalized_title", "published_date", "duplicate_slot"],
+                name="uniq_article_title_date_slot",
+            ),
         ]
         ordering = ["-published_date", "-id"]
 

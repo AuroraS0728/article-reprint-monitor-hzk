@@ -6,13 +6,18 @@ from rest_framework.test import APIClient
 from apps.articles.models import Article
 from apps.monitoring.batch_services import batch_statistics, create_batch
 from apps.monitoring.models import DetectionResult, PlatformDetectionStatus, SnapshotType
-from apps.monitoring.services import evaluate_detection
+from apps.monitoring.services import SearchOutcome, evaluate_detection
 from apps.monitoring.snapshot_services import create_status_snapshot, matrix_data_as_of
 from apps.platforms.models import Platform, PlatformStatus
 from apps.reposts.models import RepostRecord
 from tests.fixtures.test_adapter import FixtureAdapter, candidate
 
 from .test_article_platform import client_for
+
+
+class UnexpectedAdapter:
+    def search_exact_title(self, *, article: Article, platform: Platform) -> SearchOutcome:
+        raise AssertionError("历史转载已经确认后，不应再次调用平台适配器。")
 
 
 def enabled_platform(*, code: str, suffixes: list[str] | None = None) -> Platform:
@@ -80,6 +85,57 @@ def test_exact_normalized_match_preserves_all_distinct_urls_and_missing_publish_
     assert result.status == PlatformDetectionStatus.FOUND
     assert RepostRecord.objects.filter(article=source, platform=platform).count() == 2
     assert RepostRecord.objects.filter(repost_published_at__isnull=True).count() == 2
+
+
+@pytest.mark.django_db
+def test_historical_repost_prevents_repeat_request_and_keeps_legacy_matrix_found(operator: object) -> None:
+    source = article(created_by=operator)
+    platform = enabled_platform(code="STICKY_PLATFORM")
+    first_batch = create_batch(
+        trigger="IMMEDIATE",
+        article_ids=[source.id],
+        platform_ids=[platform.id],
+        created_by=operator,
+        idempotency_key="sticky-found-first",
+    )
+    first_result = first_batch.results.get()
+    evaluate_detection(
+        result=first_result,
+        adapter=FixtureAdapter(
+            completed=True,
+            candidates=(candidate(url="https://example.com/sticky", title=source.title),),
+        ),
+    )
+
+    second_batch = create_batch(
+        trigger="IMMEDIATE",
+        article_ids=[source.id],
+        platform_ids=[platform.id],
+        created_by=operator,
+        idempotency_key="sticky-found-second",
+    )
+    second_result = second_batch.results.get()
+    evaluate_detection(result=second_result, adapter=UnexpectedAdapter())
+    second_result.refresh_from_db()
+
+    assert second_result.status == PlatformDetectionStatus.FOUND
+    assert second_result.reason_code == "HISTORICAL_REPOST"
+    assert second_result.attempt_count == 0
+    key = f"{source.id}:{platform.id}"
+    assert matrix_data_as_of()[key]["status"] == PlatformDetectionStatus.FOUND
+    assert batch_statistics(second_batch)["article_reposted_count"] == 1
+
+    DetectionResult.objects.filter(id=second_result.id).update(
+        status=PlatformDetectionStatus.NOT_FOUND,
+        reason_code="",
+    )
+    assert matrix_data_as_of()[key]["status"] == PlatformDetectionStatus.FOUND
+    snapshot = create_status_snapshot(
+        snapshot_type=SnapshotType.WEEKLY,
+        cutoff_at=second_result.completed_at,
+        source_batch=second_batch,
+    )
+    assert snapshot.matrix_data[key]["status"] == PlatformDetectionStatus.FOUND
 
 
 @pytest.mark.django_db

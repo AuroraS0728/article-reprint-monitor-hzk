@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import cast
 
+from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.request import Request
@@ -10,13 +11,19 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.models import User
+from apps.articles.models import Article
 from apps.audit.services import record_audit
+from apps.core.permissions import IsAdministrator
 from apps.core.views import ok
 
 from .authentication import SourceTokenAuthentication
-from .models import SourceIngestToken
-from .serializers import SourceArticleIngestSerializer
-from .services import ingest_source_article
+from .models import ArticleIngestConflict, ArticleIngestConflictStatus, SourceIngestToken
+from .serializers import (
+    ArticleIngestConflictReviewSerializer,
+    ArticleIngestConflictSerializer,
+    SourceArticleIngestSerializer,
+)
+from .services import approve_source_ingest_conflict, ingest_source_article, link_source_ingest_conflict
 
 
 class SourceArticleIngestView(APIView):
@@ -44,14 +51,44 @@ class SourceArticleIngestView(APIView):
                 {"success": False, "error": {"code": "INVALID_SOURCE_ARTICLE", "message": str(error)}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if result.pending_review:
+            conflict = result.conflict
+            if conflict is None:
+                raise RuntimeError("Source Ingest Conflict 结果缺少持久化记录。")
+            if result.conflict_created:
+                record_audit(
+                    request,
+                    action_type="SOURCE_INGEST_CONFLICT_CREATED",
+                    target_type="ArticleIngestConflict",
+                    target_id=conflict.id,
+                    after_data={
+                        "source": token.source.code,
+                        "conflict_id": conflict.id,
+                        "existing_article_id": conflict.existing_article_id,
+                        "reason_code": result.reason_code,
+                    },
+                )
+            return ok(
+                {
+                    "created": False,
+                    "updated": False,
+                    "pending_review": True,
+                    "conflict_id": conflict.id,
+                    "reason_code": "DUPLICATE_REVIEW_REQUIRED",
+                },
+                status.HTTP_202_ACCEPTED,
+            )
+        article = result.article
+        if article is None:
+            raise RuntimeError("Source Ingest 结果缺少 Article。")
         record_audit(
             request,
             action_type="SOURCE_ARTICLE_CREATE" if result.created else "SOURCE_ARTICLE_UPDATE",
             target_type="Article",
-            target_id=result.article.id,
+            target_id=article.id,
             after_data={
                 "source": token.source.code,
-                "article_id": result.article.id,
+                "article_id": article.id,
                 "created": result.created,
                 "updated": result.updated,
             },
@@ -60,10 +97,91 @@ class SourceArticleIngestView(APIView):
             {
                 "created": result.created,
                 "updated": result.updated,
-                "article_id": result.article.id,
-                "monitoring": result.article.monitoring_status == "ACTIVE",
-                "monitor_until": result.article.monitor_until,
-                "retention_until": result.article.retention_until,
+                "pending_review": False,
+                "article_id": article.id,
+                "monitoring": article.monitoring_status == "ACTIVE",
+                "monitor_until": article.monitor_until,
+                "retention_until": article.retention_until,
             },
             status.HTTP_201_CREATED if result.created else status.HTTP_200_OK,
         )
+
+
+class ArticleIngestConflictListView(APIView):
+    permission_classes = [IsAdministrator]
+    serializer_class = ArticleIngestConflictSerializer
+
+    def get(self, request: Request) -> Response:
+        conflicts = ArticleIngestConflict.objects.select_related(
+            "source", "existing_article", "created_article", "linked_article", "created_by", "reviewed_by"
+        )
+        if status_filter := request.query_params.get("status"):
+            conflicts = conflicts.filter(status=status_filter)
+        return ok(ArticleIngestConflictSerializer(conflicts[:200], many=True).data)
+
+
+class ArticleIngestConflictReviewView(APIView):
+    permission_classes = [IsAdministrator]
+    serializer_class = ArticleIngestConflictReviewSerializer
+
+    def post(self, request: Request, pk: int) -> Response:
+        serializer = ArticleIngestConflictReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        actor = cast(User, request.user)
+        action = cast(str, serializer.validated_data["action"])
+        reason = cast(str, serializer.validated_data["reason"])
+        try:
+            if action == ArticleIngestConflictStatus.APPROVED_AS_NEW:
+                conflict, article = approve_source_ingest_conflict(
+                    conflict_id=pk,
+                    approved_by=actor,
+                    review_reason=reason,
+                )
+                record_audit(
+                    request,
+                    action_type="ARTICLE_DUPLICATE_APPROVED",
+                    target_type="article",
+                    target_id=article.id,
+                    after_data={
+                        "conflict_id": conflict.id,
+                        "article_id": article.id,
+                        "duplicate_slot": article.duplicate_slot,
+                        "reason": reason,
+                    },
+                )
+                audit_action = "ARTICLE_DUPLICATE_APPROVED"
+            else:
+                conflict = get_object_or_404(ArticleIngestConflict, pk=pk)
+                article_id = serializer.validated_data.get("article_id")
+                linked_article = get_object_or_404(Article, pk=article_id) if article_id else conflict.existing_article
+                conflict = link_source_ingest_conflict(
+                    conflict_id=pk,
+                    linked_article=linked_article,
+                    reviewed_by=actor,
+                    review_reason=reason,
+                )
+                record_audit(
+                    request,
+                    action_type="ARTICLE_DUPLICATE_LINKED",
+                    target_type="article",
+                    target_id=linked_article.id,
+                    after_data={
+                        "conflict_id": conflict.id,
+                        "linked_article_id": linked_article.id,
+                        "reason": reason,
+                    },
+                )
+                audit_action = "ARTICLE_DUPLICATE_LINKED"
+        except (ArticleIngestConflict.DoesNotExist, ValueError, PermissionError) as error:
+            return Response(
+                {"success": False, "error": {"code": "CONFLICT_REVIEW_FAILED", "message": str(error)}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        record_audit(
+            request,
+            action_type="SOURCE_INGEST_CONFLICT_REVIEWED",
+            target_type="ArticleIngestConflict",
+            target_id=conflict.id,
+            after_data={"status": conflict.status, "reason": reason, "article_action": audit_action},
+        )
+        return ok(ArticleIngestConflictSerializer(conflict).data)

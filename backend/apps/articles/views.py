@@ -6,7 +6,7 @@ from io import BytesIO
 from typing import cast
 
 from django.core.files.base import ContentFile
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.db.models import QuerySet
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -20,15 +20,15 @@ from rest_framework.response import Response
 from rest_framework.serializers import BaseSerializer
 from rest_framework.views import APIView
 
-from apps.accounts.models import User
+from apps.accounts.models import Role, User
 from apps.audit.services import record_audit
 from apps.core.permissions import CanOperate
 from apps.core.views import ok
 from apps.reposts.serializers import RepostRecordSerializer
 
-from .models import Article, ArticleImportJob, ArticleStatus, ImportStatus
+from .models import Article, ArticleImportJob, ArticleIngestMethod, ArticleStatus, ImportStatus
 from .serializers import ArticleImportJobSerializer, ArticleSerializer
-from .services import normalize_title
+from .services import ArticleDuplicateError, create_approved_duplicate, create_standard_article, normalize_title
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_UPLOAD_ROWS = 1000
@@ -38,6 +38,14 @@ ALLOWED_XLSX_MIME_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 EXPECTED_HEADERS = {"原创文章标题", "原创发布日期", "原创文章链接", "原创发布平台", "作者或部门", "备注"}
+
+
+def _has_duplicate_error(errors: object) -> bool:
+    if isinstance(errors, dict):
+        return any(_has_duplicate_error(value) for value in errors.values())
+    if isinstance(errors, list | tuple):
+        return any(_has_duplicate_error(value) for value in errors)
+    return getattr(errors, "code", "") == "duplicate" or "同日存在相同标准化标题" in str(errors)
 
 
 class ArticleListCreateView(generics.ListCreateAPIView[Article]):
@@ -162,21 +170,33 @@ class ArticleBulkPasteView(APIView):
             raise ValidationError({"articles": "单次最多粘贴100篇文章。"})
         created: list[int] = []
         errors: list[dict[str, object]] = []
+        results: list[dict[str, object]] = []
         with transaction.atomic():
             for index, item in enumerate(items, start=1):
                 serializer = ArticleSerializer(data=item)
                 if not serializer.is_valid():
-                    errors.append({"row": index, "errors": serializer.errors})
+                    row_status = "duplicate" if _has_duplicate_error(serializer.errors) else "error"
+                    row_error = {"row": index, "status": row_status, "errors": serializer.errors}
+                    errors.append(row_error)
+                    results.append(row_error)
                     continue
-                article = serializer.save(created_by=request.user)
+                try:
+                    article = serializer.save(created_by=request.user)
+                except ValidationError as error:
+                    row_status = "duplicate" if _has_duplicate_error(error.detail) else "error"
+                    row_error = {"row": index, "status": row_status, "errors": error.detail}
+                    errors.append(row_error)
+                    results.append(row_error)
+                    continue
                 created.append(article.id)
+                results.append({"row": index, "status": "created", "article_id": article.id})
         record_audit(
             request,
             action_type="ARTICLE_BULK_CREATE",
             target_type="article",
             after_data={"created_count": len(created), "error_count": len(errors)},
         )
-        return ok({"created_ids": created, "errors": errors}, status.HTTP_201_CREATED)
+        return ok({"created_ids": created, "errors": errors, "results": results}, status.HTTP_201_CREATED)
 
 
 class ArticleImportPreviewView(APIView):
@@ -267,34 +287,83 @@ class ArticleImportConfirmView(APIView):
     serializer_class = ArticleImportJobSerializer
 
     def post(self, request: Request, pk: int) -> Response:
-        job = ArticleImportJob.objects.get(pk=pk)
-        if job.status != ImportStatus.PREVIEW:
-            raise ValidationError("该导入任务已处理。")
-        confirm_duplicates = set(request.data.get("confirm_duplicate_rows", []))
+        raw_confirm_rows = request.data.get("confirm_duplicate_rows", [])
+        if not isinstance(raw_confirm_rows, list):
+            raise ValidationError({"confirm_duplicate_rows": "必须是 Excel 行号数组。"})
+        try:
+            confirm_duplicates = {int(row) for row in raw_confirm_rows}
+        except (TypeError, ValueError) as error:
+            raise ValidationError({"confirm_duplicate_rows": "Excel 行号必须是整数。"}) from error
         actor = cast(User, request.user)
-        if confirm_duplicates and actor.role != "ADMIN":
+        if confirm_duplicates and not (actor.is_superuser or actor.role == Role.ADMIN):
             return Response(
                 {"success": False, "error": {"code": "PERMISSION_DENIED", "message": "重复项需要管理员确认。"}},
                 status=403,
             )
+        reason_map = request.data.get("duplicate_reasons", {})
+        if not isinstance(reason_map, dict):
+            raise ValidationError({"duplicate_reasons": "必须是行号到确认原因的对象。"})
+        default_reason = str(request.data.get("duplicate_reason", "")).strip()
+        reasons = {
+            row: str(reason_map.get(str(row), reason_map.get(row, default_reason))).strip()
+            for row in confirm_duplicates
+        }
+        missing_reasons = sorted(row for row, reason in reasons.items() if not reason)
+        if missing_reasons:
+            raise ValidationError({"duplicate_reasons": f"以下确认重复行缺少原因：{missing_reasons}"})
+
         imported: list[int] = []
         with transaction.atomic():
+            job = ArticleImportJob.objects.select_for_update().get(pk=pk)
+            if job.status != ImportStatus.PREVIEW:
+                raise ValidationError("该导入任务已处理。")
             for item in job.preview_rows:
                 if item["state"] == "FAILED" or item["state"] == "DUPLICATE" and item["row"] not in confirm_duplicates:
                     continue
                 data = item["data"]
-                serializer = ArticleSerializer(data=data)
+                approved_duplicate = item["state"] == "DUPLICATE"
+                serializer = ArticleSerializer(data=data, context={"allow_approved_duplicate": approved_duplicate})
                 if not serializer.is_valid():
+                    item["confirm_result"] = "ERROR"
+                    item["confirm_errors"] = serializer.errors
                     continue
                 try:
-                    article = serializer.save(created_by=actor)
-                except IntegrityError:
+                    article_data = {**serializer.validated_data, "ingest_method": ArticleIngestMethod.EXCEL}
+                    if approved_duplicate:
+                        article = create_approved_duplicate(
+                            data=article_data,
+                            approved_by=actor,
+                            duplicate_reason=reasons[cast(int, item["row"])],
+                        )
+                    else:
+                        article = create_standard_article(data=article_data, created_by=actor)
+                except ArticleDuplicateError as error:
+                    item["state"] = "DUPLICATE"
+                    item["reason"] = str(error)
+                    item["confirm_result"] = "DUPLICATE"
                     continue
                 imported.append(article.id)
+                item["confirm_result"] = "CREATED"
+                item["article_id"] = article.id
+                if approved_duplicate:
+                    record_audit(
+                        request,
+                        action_type="ARTICLE_DUPLICATE_APPROVED",
+                        target_type="article",
+                        target_id=article.id,
+                        after_data={
+                            "article_id": article.id,
+                            "duplicate_slot": article.duplicate_slot,
+                            "reason": article.duplicate_reason,
+                            "import_job_id": job.id,
+                            "row": item["row"],
+                        },
+                    )
             job.status = ImportStatus.COMPLETED
+            job.preview_rows = job.preview_rows
             job.imported_article_ids = imported
             job.completed_at = timezone.now()
-            job.save(update_fields=["status", "imported_article_ids", "completed_at"])
+            job.save(update_fields=["status", "preview_rows", "imported_article_ids", "completed_at"])
         record_audit(
             request,
             action_type="ARTICLE_IMPORT_CONFIRM",

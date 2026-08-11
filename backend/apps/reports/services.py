@@ -74,7 +74,7 @@ def report_dataset(*, snapshot: StatusSnapshot, period_start: date, period_end: 
             item = matrix.get(f"{article.id}:{platform.id}", {})
             status = str(item.get("status", PlatformDetectionStatus.UNKNOWN))
             records = reposts_by_pair[(article.id, platform.id)]
-            if any(record.data_source == "MANUAL_SUPPLEMENT" for record in records):
+            if records:
                 status = str(PlatformDetectionStatus.FOUND)
             if status == PlatformDetectionStatus.FOUND:
                 found_count += 1
