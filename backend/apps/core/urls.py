@@ -45,7 +45,11 @@ from apps.reposts.views import (
     ManualRepostValidityView,
     RepostRecordListView,
 )
-from apps.sources.views import SourceArticleIngestView
+from apps.sources.views import (
+    ArticleIngestConflictListView,
+    ArticleIngestConflictReviewView,
+    SourceArticleIngestView,
+)
 
 from .views import ChangePasswordView, HealthView, LoginView, LogoutView, MeView, UserDetailView, UserListCreateView
 
@@ -59,6 +63,8 @@ urlpatterns = [
     path("users/<int:pk>", UserDetailView.as_view()),
     path("articles", ArticleListCreateView.as_view()),
     path("source-ingest/articles", SourceArticleIngestView.as_view()),
+    path("source-ingest-conflicts", ArticleIngestConflictListView.as_view()),
+    path("source-ingest-conflicts/<int:pk>/review", ArticleIngestConflictReviewView.as_view()),
     path("articles/<int:pk>", ArticleDetailView.as_view()),
     path("articles/<int:pk>/reposts", ArticleRepostsView.as_view()),
     path("articles/bulk-paste", ArticleBulkPasteView.as_view()),
