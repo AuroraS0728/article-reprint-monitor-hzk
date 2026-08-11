@@ -15,6 +15,7 @@ from apps.core.redaction import safe_error_message
 from apps.monitoring.models import DetectionBatch, DetectionResult, StatusSnapshot, TaskFailureLog
 from apps.reports.models import GeneratedReport, ReportEmailDelivery
 from apps.reposts.models import RepostRecord
+from apps.sources.services import purge_expired_source_articles
 
 from .models import DatabaseBackup, MaintenanceRun, MaintenanceStatus, SystemRuntimeConfiguration
 
@@ -75,10 +76,10 @@ def cleanup_expired_data() -> MaintenanceRun:
         ).delete()
         details["email_logs_deleted"] = email_deleted
 
-        repost_deleted, _ = RepostRecord.objects.filter(
-            created_at__lt=now - timedelta(days=REPOST_RETENTION_DAYS)
-        ).delete()
-        details["repost_records_deleted"] = repost_deleted
+        # Global-search reposts are sticky historical facts. They are removed only
+        # together with their Article after that Article reaches retention_until.
+        global_purge = purge_expired_source_articles()
+        details.update({f"global_{key}": value for key, value in global_purge.items()})
 
         expiring_reports = GeneratedReport.objects.filter(
             generated_at__lt=now - timedelta(days=STATISTICS_RETENTION_DAYS), email_deliveries__isnull=True
@@ -102,10 +103,14 @@ def cleanup_expired_data() -> MaintenanceRun:
         )
         details["detection_batches_deleted"] = batch_deleted
 
-        protected_article_ids = set(RepostRecord.objects.values_list("article_id", flat=True))
-        protected_article_ids.update(DetectionResult.objects.values_list("article_id", flat=True))
-        articles = Article.objects.filter(published_date__lt=(now - timedelta(days=ARTICLE_RETENTION_DAYS)).date())
+        protected_article_ids = set(DetectionResult.objects.values_list("article_id", flat=True))
+        articles = Article.objects.filter(
+            retention_until__isnull=True,
+            published_date__lt=(now - timedelta(days=ARTICLE_RETENTION_DAYS)).date(),
+        )
         safe_articles = articles.exclude(id__in=protected_article_ids)
+        legacy_repost_deleted, _ = RepostRecord.objects.filter(article_id__in=safe_articles).delete()
+        details["legacy_repost_records_deleted"] = legacy_repost_deleted
         article_deleted, _ = safe_articles.delete()
         details["articles_deleted"] = article_deleted
         details["articles_retained_for_referential_integrity"] = articles.count()

@@ -26,7 +26,7 @@ class ManualRepostStateSerializer(serializers.Serializer[object]):
 
 class RepostRecordSerializer(serializers.ModelSerializer[RepostRecord]):
     article_title = serializers.CharField(source="article.title", read_only=True)
-    platform_name = serializers.CharField(source="platform.name", read_only=True)
+    platform_name = serializers.CharField(source="platform.name", read_only=True, default=None)
     manually_added_by_username = serializers.CharField(
         source="manually_added_by.username", read_only=True, default=None
     )
@@ -40,13 +40,27 @@ class RepostRecordSerializer(serializers.ModelSerializer[RepostRecord]):
             "article_title",
             "platform",
             "platform_name",
+            "site_name",
+            "site_domain",
+            "raw_url",
+            "canonical_url",
+            "canonical_url_hash",
             "original_url",
             "normalized_url",
             "final_url",
             "repost_title",
+            "result_title",
+            "normalized_result_title",
+            "similarity_score",
+            "search_provider",
             "repost_published_at",
+            "result_published_at",
             "first_discovered_at",
+            "first_found_at",
             "last_checked_at",
+            "last_seen_at",
+            "availability_status",
+            "last_availability_checked_at",
             "data_source",
             "manual_reason",
             "manually_added_by",

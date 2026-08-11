@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from typing import Protocol
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.db import transaction
 from django.utils import timezone
@@ -13,6 +12,7 @@ from apps.articles.models import Article
 from apps.articles.services import normalize_title
 from apps.platforms.models import Platform
 from apps.reposts.models import RepostRecord
+from apps.sources.services import canonicalize_http_url
 
 from .models import DetectionResult, PlatformDetectionStatus
 
@@ -63,27 +63,7 @@ def update_platform_runtime_status(*, platform: Platform, succeeded: bool, failu
 
 
 def normalize_repost_url(value: str) -> str:
-    parsed = urlsplit(value.strip())
-    scheme = parsed.scheme.lower()
-    hostname = (parsed.hostname or "").lower()
-    if scheme not in {"http", "https"} or not hostname:
-        raise ValueError("转载链接必须是绝对 HTTP(S) URL。")
-    port = (
-        f":{parsed.port}"
-        if parsed.port
-        and not (scheme == "https" and parsed.port == 443)
-        and not (scheme == "http" and parsed.port == 80)
-        else ""
-    )
-    path = parsed.path or "/"
-    query = urlencode(
-        sorted(
-            (key, value)
-            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-            if not key.lower().startswith("utm_")
-        )
-    )
-    return urlunsplit((scheme, f"{hostname}{port}", path, query, ""))
+    return canonicalize_http_url(value)
 
 
 def no_validated_adapter(*, article: Article, platform: Platform) -> SearchOutcome:
@@ -163,18 +143,30 @@ def upsert_repost_record(
 ) -> RepostRecord:
     normalized_url = normalize_repost_url(candidate.final_url or candidate.original_url)
     normalized_url_hash = sha256(normalized_url.encode()).hexdigest()
+    domain_row = platform.domains.first()
     record, created = RepostRecord.objects.get_or_create(
         article=article,
-        platform=platform,
-        normalized_url_hash=normalized_url_hash,
+        canonical_url_hash=normalized_url_hash,
         defaults={
+            "platform": platform,
+            "site_name": platform.name,
+            "site_domain": domain_row.domain if domain_row else "",
+            "raw_url": candidate.original_url,
+            "canonical_url": normalized_url,
+            "canonical_url_hash": normalized_url_hash,
             "normalized_url": normalized_url,
+            "normalized_url_hash": normalized_url_hash,
             "original_url": candidate.original_url,
             "final_url": candidate.final_url,
             "repost_title": candidate.title,
+            "result_title": candidate.title,
+            "normalized_result_title": normalize_title(candidate.title),
             "repost_published_at": candidate.published_at,
+            "result_published_at": candidate.published_at,
             "first_discovered_at": checked_at,
+            "first_found_at": checked_at,
             "last_checked_at": checked_at,
+            "last_seen_at": checked_at,
             "data_source": candidate.data_source,
         },
     )
@@ -184,11 +176,14 @@ def upsert_repost_record(
             record.save(update_fields=["last_checked_at", "updated_at"])
             return record
         record.normalized_url = normalized_url
+        record.canonical_url = normalized_url
+        record.raw_url = candidate.original_url
         record.original_url = candidate.original_url
         record.final_url = candidate.final_url
         record.repost_title = candidate.title
         record.repost_published_at = candidate.published_at
         record.last_checked_at = checked_at
+        record.last_seen_at = checked_at
         record.data_source = candidate.data_source
         record.save()
     return record

@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "axes",
     "apps.accounts",
+    "apps.sources",
     "apps.articles",
     "apps.platforms",
     "apps.audit",
@@ -113,9 +114,50 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://redis:6379/0"))
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://redis:6379/1")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = False
+SEARCH_PROVIDER = os.environ.get("SEARCH_PROVIDER", "")
+BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
+SEARCH_SIMILARITY_THRESHOLD = float(os.environ.get("SEARCH_SIMILARITY_THRESHOLD", "90"))
+SEARCH_SHORT_TITLE_LENGTH = int(os.environ.get("SEARCH_SHORT_TITLE_LENGTH", "8"))
+SEARCH_RESULT_LIMIT = int(os.environ.get("SEARCH_RESULT_LIMIT", "20"))
+SEARCH_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("SEARCH_REQUEST_TIMEOUT_SECONDS", "15"))
+SEARCH_MAX_RESPONSE_BYTES = int(os.environ.get("SEARCH_MAX_RESPONSE_BYTES", str(2 * 1024 * 1024)))
+SEARCH_PUBLISHED_TIME_TOLERANCE_HOURS = int(os.environ.get("SEARCH_PUBLISHED_TIME_TOLERANCE_HOURS", "24"))
+SEARCH_ERROR_BACKOFF_MINUTES = int(os.environ.get("SEARCH_ERROR_BACKOFF_MINUTES", "30"))
+SEARCH_LOCK_TIMEOUT_SECONDS = int(os.environ.get("SEARCH_LOCK_TIMEOUT_SECONDS", "300"))
+SEARCH_SCHEDULER_BATCH_SIZE = int(os.environ.get("SEARCH_SCHEDULER_BATCH_SIZE", "100"))
+ARTICLE_MONITOR_DAYS = int(os.environ.get("ARTICLE_MONITOR_DAYS", "7"))
+ARTICLE_RETENTION_DAYS = int(os.environ.get("ARTICLE_RETENTION_DAYS", "365"))
+ARTICLE_SEARCH_SCHEDULE_MINUTES = tuple(
+    int(value)
+    for value in os.environ.get("ARTICLE_SEARCH_SCHEDULE_MINUTES", "0,15,30,60,120,240,480,720").split(",")
+    if value.strip()
+)
+CELERY_TASK_DEFAULT_QUEUE = "http"
+CELERY_TASK_ROUTES = {
+    "apps.sources.tasks.search_article_reposts": {"queue": "search"},
+    "apps.sources.tasks.schedule_due_article_searches": {"queue": "search"},
+    "apps.sources.tasks.complete_expired_article_monitoring": {"queue": "search"},
+    "apps.sources.tasks.purge_expired_monitoring_data": {"queue": "report"},
+    "apps.monitoring.tasks.*": {"queue": "http"},
+    "apps.reports.tasks.*": {"queue": "report"},
+    "apps.operations.tasks.*": {"queue": "report"},
+}
 CELERY_BEAT_SCHEDULE = {
+    "schedule-due-global-repost-searches": {
+        "task": "apps.sources.tasks.schedule_due_article_searches",
+        "schedule": crontab(minute="*/5"),
+    },
+    "complete-expired-global-monitoring": {
+        "task": "apps.sources.tasks.complete_expired_article_monitoring",
+        "schedule": crontab(minute="*/10"),
+    },
+    "purge-expired-global-monitoring": {
+        "task": "apps.sources.tasks.purge_expired_monitoring_data",
+        "schedule": crontab(minute=15, hour=2),
+    },
     "schedule-automatic-detection-hourly": {
         "task": "apps.monitoring.tasks.schedule_automatic_batches",
         "schedule": crontab(minute=0),

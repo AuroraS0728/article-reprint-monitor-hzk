@@ -63,6 +63,8 @@ def report_dataset(*, snapshot: StatusSnapshot, period_start: date, period_end: 
     )
     reposts_by_pair: dict[tuple[int, int], list[RepostRecord]] = defaultdict(list)
     for repost in repost_rows:
+        if repost.platform_id is None:
+            continue
         reposts_by_pair[(repost.article_id, repost.platform_id)].append(repost)
     rows: list[dict[str, Any]] = []
     for article in articles:

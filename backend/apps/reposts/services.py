@@ -7,8 +7,8 @@ from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.articles.models import Article
-from apps.monitoring.services import normalize_repost_url
 from apps.platforms.models import Platform
+from apps.sources.services import canonicalize_http_url
 
 from .models import RepostRecord
 
@@ -21,11 +21,10 @@ class ManualSupplementConflict(ValueError):
 def create_manual_supplement(
     *, article: Article, platform: Platform, repost_url: str, reason: str, actor: User
 ) -> RepostRecord:
-    normalized_url = normalize_repost_url(repost_url)
+    normalized_url = canonicalize_http_url(repost_url)
     normalized_url_hash = sha256(normalized_url.encode()).hexdigest()
-    if RepostRecord.objects.filter(
-        article=article, platform=platform, normalized_url_hash=normalized_url_hash
-    ).exists():
+    domain_row = platform.domains.first()
+    if RepostRecord.objects.filter(article=article, canonical_url_hash=normalized_url_hash).exists():
         raise ManualSupplementConflict("该文章、平台和转载链接的记录已存在，不能重复补录。")
     now = timezone.now()
     try:
@@ -33,12 +32,20 @@ def create_manual_supplement(
             article=article,
             platform=platform,
             original_url=repost_url,
+            raw_url=repost_url,
+            canonical_url=normalized_url,
+            canonical_url_hash=normalized_url_hash,
             normalized_url=normalized_url,
             normalized_url_hash=normalized_url_hash,
             final_url=repost_url,
             repost_title=article.title,
+            result_title=article.title,
+            site_name=platform.name,
+            site_domain=domain_row.domain if domain_row is not None else "",
             first_discovered_at=now,
+            first_found_at=now,
             last_checked_at=now,
+            last_seen_at=now,
             data_source="MANUAL_SUPPLEMENT",
             manual_reason=reason,
             manually_added_by=actor,
