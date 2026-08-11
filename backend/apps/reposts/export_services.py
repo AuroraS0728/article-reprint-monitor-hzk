@@ -9,13 +9,13 @@ from io import BytesIO
 from typing import Any, cast
 
 from django.db import transaction
-from django.db.models import Prefetch, Q, QuerySet
+from django.db.models import Exists, OuterRef, Prefetch, Q, QuerySet
 from django.utils import timezone
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.worksheet.worksheet import Worksheet
 
-from apps.articles.models import Article
+from apps.articles.models import Article, ArticleMonitoringStatus
 
 from .models import RepostRecord
 
@@ -26,6 +26,9 @@ AVAILABILITY_LABELS = {
     "UNAVAILABLE": "不可访问",
     "REMOVED": "已删除",
 }
+MONITORING_STATUS_LABELS = dict(ArticleMonitoringStatus.choices)
+EXCEL_DATETIME_FORMAT = "yyyy-mm-dd hh:mm"
+EXCEL_DATE_FORMAT = "yyyy-mm-dd"
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,11 @@ def _historical_records(as_of: datetime) -> QuerySet[RepostRecord]:
 
 def filtered_articles(filters: GlobalExportFilters, *, as_of: datetime) -> QuerySet[Article]:
     queryset = Article.objects.filter(Q(retention_until__isnull=True) | Q(retention_until__gte=as_of))
+    historical_reposts = RepostRecord.objects.filter(
+        article_id=OuterRef("pk"),
+        is_valid=True,
+        created_at__lte=as_of,
+    )
     if filters.start_date:
         queryset = queryset.filter(published_date__gte=filters.start_date)
     if filters.end_date:
@@ -84,13 +92,15 @@ def filtered_articles(filters: GlobalExportFilters, *, as_of: datetime) -> Query
     if filters.monitoring_status:
         queryset = queryset.filter(monitoring_status=filters.monitoring_status)
     if filters.site_domain:
-        queryset = queryset.filter(
-            repost_records__site_domain__iexact=filters.site_domain, repost_records__is_valid=True
+        queryset = queryset.annotate(
+            matches_site_as_of=Exists(historical_reposts.filter(site_domain__iexact=filters.site_domain))
+        ).filter(matches_site_as_of=True)
+    if filters.has_repost is not None:
+        queryset = queryset.annotate(
+            has_repost_as_of=Exists(historical_reposts),
+        ).filter(
+            has_repost_as_of=filters.has_repost,
         )
-    if filters.has_repost is True:
-        queryset = queryset.filter(repost_records__is_valid=True)
-    elif filters.has_repost is False:
-        queryset = queryset.exclude(repost_records__is_valid=True)
     return queryset.distinct().order_by("published_at", "published_date", "id")
 
 
@@ -125,6 +135,10 @@ def _format_sheet(sheet: Worksheet, widths: Iterable[int]) -> None:
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(vertical="center", wrap_text=True)
+            if isinstance(cell.value, datetime):
+                cell.number_format = EXCEL_DATETIME_FORMAT
+            elif isinstance(cell.value, date):
+                cell.number_format = EXCEL_DATE_FORMAT
 
 
 @transaction.atomic
@@ -179,7 +193,7 @@ def build_global_repost_workbook(filters: GlobalExportFilters) -> tuple[bytes, d
                 safe_excel_text(article.author or article.author_department),
                 safe_excel_text(article.title),
                 "",
-                article.monitoring_status,
+                MONITORING_STATUS_LABELS.get(article.monitoring_status, article.monitoring_status),
                 excel_datetime(article.monitor_until),
                 len(distinct_domains),
                 len(distinct_urls),
@@ -261,7 +275,7 @@ def build_global_repost_workbook(filters: GlobalExportFilters) -> tuple[bytes, d
         ("至少发现转载的文章数", len(articles_with_reposts)),
         ("暂无转载文章数", len(articles) - len(articles_with_reposts)),
         ("不同转载网站总数", len(domains)),
-        ("转载链接总数", len({_record_url(record) for record in records})),
+        ("转载链接总数", len({(record.article_id, _record_url(record)) for record in records})),
     ]:
         summary_sheet.append([label, value, excel_datetime(export_as_of)])
     summary_sheet.append([])
@@ -275,7 +289,7 @@ def build_global_repost_workbook(filters: GlobalExportFilters) -> tuple[bytes, d
                 safe_excel_text(site_names[domain]),
                 safe_excel_text(domain),
                 site_article_count,
-                len({_record_url(record) for record in site_records}),
+                len({(record.article_id, _record_url(record)) for record in site_records}),
                 site_article_count / denominator if denominator else 0,
             ]
         )
