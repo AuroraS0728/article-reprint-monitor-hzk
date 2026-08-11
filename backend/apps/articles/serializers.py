@@ -1,10 +1,18 @@
 from datetime import date
 from typing import cast
 
+from django.db import IntegrityError
 from rest_framework import serializers
 
+from apps.accounts.models import User
+
 from .models import Article, ArticleImportJob
-from .services import normalize_title
+from .services import (
+    ArticleDuplicateError,
+    create_standard_article,
+    is_title_slot_conflict,
+    normalize_title,
+)
 
 
 class ArticleSerializer(serializers.ModelSerializer[Article]):
@@ -34,6 +42,10 @@ class ArticleSerializer(serializers.ModelSerializer[Article]):
             "last_searched_at",
             "next_search_at",
             "ingest_method",
+            "duplicate_slot",
+            "duplicate_approved_by",
+            "duplicate_approved_at",
+            "duplicate_reason",
             "repost_site_count",
             "repost_url_count",
             "created_by",
@@ -51,6 +63,10 @@ class ArticleSerializer(serializers.ModelSerializer[Article]):
             "last_searched_at",
             "next_search_at",
             "ingest_method",
+            "duplicate_slot",
+            "duplicate_approved_by",
+            "duplicate_approved_at",
+            "duplicate_reason",
             "repost_site_count",
             "repost_url_count",
             "created_by",
@@ -76,7 +92,13 @@ class ArticleSerializer(serializers.ModelSerializer[Article]):
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
         title = str(attrs.get("title", getattr(self.instance, "title", "")))
         published_date = attrs.get("published_date", getattr(self.instance, "published_date", None))
-        if title and isinstance(published_date, date):
+        normalized_title = normalize_title(title)
+        identity_changed = self.instance is None or (
+            normalized_title != cast(Article, self.instance).normalized_title
+            or published_date != cast(Article, self.instance).published_date
+        )
+        skip_duplicate_validation = bool(self.context.get("allow_approved_duplicate"))
+        if title and isinstance(published_date, date) and identity_changed and not skip_duplicate_validation:
             duplicate = Article.objects.filter(normalized_title=normalize_title(title), published_date=published_date)
             if self.instance:
                 duplicate = duplicate.exclude(pk=cast(Article, self.instance).pk)
@@ -85,13 +107,23 @@ class ArticleSerializer(serializers.ModelSerializer[Article]):
         return attrs
 
     def create(self, validated_data: dict[str, object]) -> Article:
-        validated_data["normalized_title"] = normalize_title(str(validated_data["title"]))
-        return super().create(validated_data)
+        created_by = cast(User, validated_data.pop("created_by"))
+        try:
+            return create_standard_article(data=validated_data, created_by=created_by)
+        except ArticleDuplicateError as error:
+            raise serializers.ValidationError({"title": str(error)}, code="duplicate") from error
 
     def update(self, instance: Article, validated_data: dict[str, object]) -> Article:
         if "title" in validated_data:
             validated_data["normalized_title"] = normalize_title(str(validated_data["title"]))
-        return super().update(instance, validated_data)
+        try:
+            return super().update(instance, validated_data)
+        except IntegrityError as error:
+            if is_title_slot_conflict(error):
+                raise serializers.ValidationError(
+                    {"title": "同日存在相同标准化标题，修改被拒绝。"}, code="duplicate"
+                ) from error
+            raise
 
 
 class ArticleImportJobSerializer(serializers.ModelSerializer[ArticleImportJob]):
