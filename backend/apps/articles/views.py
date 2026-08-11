@@ -8,6 +8,7 @@ from typing import cast
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
 from django.db.models import QuerySet
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from openpyxl import load_workbook
 from rest_framework import generics, permissions, status
@@ -23,6 +24,7 @@ from apps.accounts.models import User
 from apps.audit.services import record_audit
 from apps.core.permissions import CanOperate
 from apps.core.views import ok
+from apps.reposts.serializers import RepostRecordSerializer
 
 from .models import Article, ArticleImportJob, ArticleStatus, ImportStatus
 from .serializers import ArticleImportJobSerializer, ArticleSerializer
@@ -45,7 +47,7 @@ class ArticleListCreateView(generics.ListCreateAPIView[Article]):
         return [CanOperate()] if self.request.method == "POST" else [permissions.IsAuthenticated()]
 
     def get_queryset(self) -> QuerySet[Article]:
-        queryset = Article.objects.select_related("created_by").all()
+        queryset = Article.objects.select_related("created_by", "source").prefetch_related("repost_records__platform")
         if title := self.request.query_params.get("title"):
             queryset = queryset.filter(title__icontains=title)
         if status_value := self.request.query_params.get("status"):
@@ -100,6 +102,26 @@ class ArticleDetailView(generics.RetrieveUpdateAPIView[Article]):
             after_data=ArticleSerializer(article).data,
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ArticleRepostsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = RepostRecordSerializer
+
+    def get(self, request: Request, pk: int) -> Response:
+        article = get_object_or_404(Article, pk=pk)
+        reposts = (
+            article.repost_records.filter(is_valid=True)
+            .select_related("platform")
+            .order_by("first_found_at", "first_discovered_at", "id")
+        )
+        return ok(
+            {
+                "article": ArticleSerializer(article).data,
+                "monitoring_status": article.monitoring_status,
+                "reposts": RepostRecordSerializer(reposts, many=True).data,
+            }
+        )
 
 
 class ArticleBulkStatusView(APIView):

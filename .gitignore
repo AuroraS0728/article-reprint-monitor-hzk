@@ -8,11 +8,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.audit-cache/
 coverage.xml
 htmlcov/
 staticfiles/
 media/
-reports/
+/reports/
 private_uploads/
 backups/
 secrets/
@@ -29,6 +30,7 @@ production*.yml
 samples/
 frontend/node_modules/
 frontend/.pnpm-store/
+.pnpm-store/
 frontend/dist/
 frontend/*.tsbuildinfo
 *.log

@@ -37,7 +37,7 @@ services:
     networks: [internal]
   celery_worker:
     build: ./backend
-    command: celery -A config worker -l INFO -Q http,report -c 1
+    command: celery -A config worker -l INFO -Q http,search,report -c 1
     env_file: .env
     volumes: [./backend:/app, ./reports:/app/reports]
     depends_on: [web]

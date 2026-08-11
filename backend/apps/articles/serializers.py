@@ -8,23 +8,65 @@ from .services import normalize_title
 
 
 class ArticleSerializer(serializers.ModelSerializer[Article]):
+    repost_site_count = serializers.SerializerMethodField()
+    repost_url_count = serializers.SerializerMethodField()
+
     class Meta:
         model = Article
         fields = [
             "id",
             "title",
             "normalized_title",
+            "source",
+            "source_item_key",
             "published_date",
+            "published_at",
+            "author",
             "original_url",
             "source_platform",
             "author_department",
             "notes",
             "status",
+            "monitoring_status",
+            "monitor_started_at",
+            "monitor_until",
+            "retention_until",
+            "last_searched_at",
+            "next_search_at",
+            "ingest_method",
+            "repost_site_count",
+            "repost_url_count",
             "created_by",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["normalized_title", "created_by", "created_at", "updated_at"]
+        read_only_fields = [
+            "normalized_title",
+            "source",
+            "source_item_key",
+            "monitoring_status",
+            "monitor_started_at",
+            "monitor_until",
+            "retention_until",
+            "last_searched_at",
+            "next_search_at",
+            "ingest_method",
+            "repost_site_count",
+            "repost_url_count",
+            "created_by",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_repost_site_count(self, instance: Article) -> int:
+        domains = {
+            record.site_domain or (record.platform.name if record.platform is not None else "")
+            for record in instance.repost_records.filter(is_valid=True).select_related("platform")
+        }
+        return len(domains - {""})
+
+    def get_repost_url_count(self, instance: Article) -> int:
+        return instance.repost_records.filter(is_valid=True).count()
 
     def validate_title(self, value: str) -> str:
         if not value.strip():

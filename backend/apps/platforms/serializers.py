@@ -24,6 +24,10 @@ class PlatformSerializer(serializers.ModelSerializer[Platform]):
             "request_interval_ms",
             "timeout_seconds",
             "retry_count",
+            "last_success_at",
+            "last_failure_at",
+            "consecutive_failure_count",
+            "last_failure_reason",
             "confirmed_title_suffixes",
             "config_version",
             "last_verified_at",
@@ -33,7 +37,17 @@ class PlatformSerializer(serializers.ModelSerializer[Platform]):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["status", "config_version", "last_verified_at", "created_at", "updated_at"]
+        read_only_fields = [
+            "status",
+            "config_version",
+            "last_verified_at",
+            "last_success_at",
+            "last_failure_at",
+            "consecutive_failure_count",
+            "last_failure_reason",
+            "created_at",
+            "updated_at",
+        ]
 
     def validate_confirmed_title_suffixes(self, values: list[str]) -> list[str]:
         cleaned = [value.strip() for value in values if value.strip()]

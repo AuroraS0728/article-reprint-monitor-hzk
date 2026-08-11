@@ -19,15 +19,53 @@ class ImportStatus(models.TextChoices):
     COMPLETED = "COMPLETED", "已完成"
 
 
+class ArticleMonitoringStatus(models.TextChoices):
+    PENDING = "PENDING", "待监测"
+    ACTIVE = "ACTIVE", "监测中"
+    COMPLETED = "COMPLETED", "已完成"
+    ERROR = "ERROR", "异常"
+
+
+class ArticleIngestMethod(models.TextChoices):
+    MANUAL = "MANUAL", "手工录入"
+    EXCEL = "EXCEL", "Excel 导入"
+    BULK_PASTE = "BULK_PASTE", "批量粘贴"
+    SOURCE_API = "SOURCE_API", "来源接口"
+
+
 class Article(models.Model):
+    source = models.ForeignKey(
+        "sources.Source", related_name="articles", null=True, blank=True, on_delete=models.PROTECT
+    )
+    source_item_key = models.CharField(max_length=128, null=True, blank=True)
     title = models.CharField(max_length=500)
     normalized_title = models.CharField(max_length=500, db_index=True)
     published_date = models.DateField(db_index=True)
+    author = models.CharField(max_length=255, blank=True, default="")
+    published_at = models.DateTimeField(null=True, blank=True, db_index=True)
     original_url = models.URLField(max_length=2048, blank=True)
     source_platform = models.CharField(max_length=100, blank=True)
     author_department = models.CharField(max_length=100, blank=True)
     notes = models.CharField(max_length=500, blank=True)
     status = models.CharField(max_length=16, choices=ArticleStatus.choices, default=ArticleStatus.ACTIVE, db_index=True)
+    discovered_at = models.DateTimeField(null=True, blank=True)
+    monitor_started_at = models.DateTimeField(null=True, blank=True)
+    monitor_until = models.DateTimeField(null=True, blank=True, db_index=True)
+    retention_until = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_searched_at = models.DateTimeField(null=True, blank=True)
+    next_search_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    monitoring_status = models.CharField(
+        max_length=16,
+        choices=ArticleMonitoringStatus.choices,
+        default=ArticleMonitoringStatus.PENDING,
+        db_index=True,
+    )
+    ingest_method = models.CharField(
+        max_length=16,
+        choices=ArticleIngestMethod.choices,
+        default=ArticleIngestMethod.MANUAL,
+        db_index=True,
+    )
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -35,7 +73,7 @@ class Article(models.Model):
     class Meta:
         db_table = "article_article"
         constraints = [
-            models.UniqueConstraint(fields=["normalized_title", "published_date"], name="uniq_article_title_date")
+            models.UniqueConstraint(fields=["source", "source_item_key"], name="uniq_source_article_item"),
         ]
         ordering = ["-published_date", "-id"]
 

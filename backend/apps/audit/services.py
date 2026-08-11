@@ -2,17 +2,9 @@ from typing import Any
 
 from rest_framework.request import Request
 
+from apps.core.redaction import redact_sensitive
+
 from .models import OperationLog
-
-SENSITIVE_KEYS = {"password", "secret", "token", "authorization", "cookie", "smtp_password"}
-
-
-def _redact(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: "[REDACTED]" if key.lower() in SENSITIVE_KEYS else _redact(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_redact(item) for item in value]
-    return value
 
 
 def record_audit(
@@ -31,8 +23,8 @@ def record_audit(
         action_type=action_type,
         target_type=target_type,
         target_id=str(target_id),
-        before_data=_redact(before_data or {}),
-        after_data=_redact(after_data or {}),
+        before_data=redact_sensitive(before_data or {}),
+        after_data=redact_sensitive(after_data or {}),
         request_id=request.headers.get("X-Request-ID", "")[:64],
         ip_address=ip_address or None,
     )

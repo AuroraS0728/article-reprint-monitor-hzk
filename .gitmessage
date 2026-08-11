@@ -1,0 +1,13 @@
+# <type>(<scope>): <imperative summary, <= 72 chars>
+#
+# Iteration: <phase / issue / objective>
+# Changes:
+# - <user-visible or technical change>
+#
+# Verification:
+# - <exact command and real result>
+#
+# Risks / follow-up:
+# - <unclosed risk, assumption, or "None">
+#
+# Never include passwords, tokens, Cookies, private URLs, personal data, or production configuration.
