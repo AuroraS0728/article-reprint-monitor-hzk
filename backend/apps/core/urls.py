@@ -7,6 +7,7 @@ from apps.articles.views import (
     ArticleImportConfirmView,
     ArticleImportPreviewView,
     ArticleListCreateView,
+    ArticleRepostsView,
 )
 from apps.audit.views import OperationLogListView
 from apps.monitoring.views import (
@@ -38,7 +39,13 @@ from apps.reports.views import (
     SMTPConfigurationView,
     TestEmailView,
 )
-from apps.reposts.views import ManualRepostCreateView, ManualRepostValidityView, RepostRecordListView
+from apps.reposts.views import (
+    GlobalRepostExportView,
+    ManualRepostCreateView,
+    ManualRepostValidityView,
+    RepostRecordListView,
+)
+from apps.sources.views import SourceArticleIngestView
 
 from .views import ChangePasswordView, HealthView, LoginView, LogoutView, MeView, UserDetailView, UserListCreateView
 
@@ -51,7 +58,9 @@ urlpatterns = [
     path("users", UserListCreateView.as_view()),
     path("users/<int:pk>", UserDetailView.as_view()),
     path("articles", ArticleListCreateView.as_view()),
+    path("source-ingest/articles", SourceArticleIngestView.as_view()),
     path("articles/<int:pk>", ArticleDetailView.as_view()),
+    path("articles/<int:pk>/reposts", ArticleRepostsView.as_view()),
     path("articles/bulk-paste", ArticleBulkPasteView.as_view()),
     path("articles/bulk-status", ArticleBulkStatusView.as_view()),
     path("article-imports", ArticleImportPreviewView.as_view()),
@@ -73,6 +82,7 @@ urlpatterns = [
     path("detection-batches/<int:pk>/statistics", DetectionStatisticsView.as_view()),
     path("detection-results/<int:pk>/reposts", DetectionResultRepostsView.as_view()),
     path("repost-records", RepostRecordListView.as_view()),
+    path("repost-monitor/export.xlsx", GlobalRepostExportView.as_view()),
     path("manual-reposts", ManualRepostCreateView.as_view()),
     path("manual-reposts/<int:pk>/<str:action>", ManualRepostValidityView.as_view()),
     path("detection-selection-defaults", DetectionSelectionDefaultsView.as_view()),
