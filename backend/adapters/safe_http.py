@@ -125,12 +125,39 @@ class SafeHttpClient:
         return ResolvedTarget(hostname=hostname, port=port, addresses=addresses)
 
     def get(self, url: str, *, headers: dict[str, str] | None = None) -> SafeHttpResponse:
+        return self.request("GET", url, headers=headers)
+
+    def post(
+        self, url: str, *, headers: dict[str, str] | None = None, content: bytes | None = None
+    ) -> SafeHttpResponse:
+        return self.request("POST", url, headers=headers, content=content)
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        content: bytes | None = None,
+    ) -> SafeHttpResponse:
+        normalized_method = method.upper()
+        if normalized_method not in {"GET", "POST"}:
+            raise ValueError("Only GET and POST requests are supported by the safe HTTP client.")
         requested_url = url
         current_url = url
         redirects: list[str] = []
         for _ in range(self.max_redirects + 1):
             target = self.resolve_and_validate(current_url)
-            response, client = self._get_pinned(current_url, target, headers=headers)
+            if normalized_method == "GET":
+                response, client = self._get_pinned(current_url, target, headers=headers)
+            else:
+                response, client = self._request_pinned(
+                    normalized_method,
+                    current_url,
+                    target,
+                    headers=headers,
+                    content=content,
+                )
             try:
                 if response.is_redirect:
                     location = response.headers.get("location")
@@ -160,17 +187,24 @@ class SafeHttpClient:
                 client.close()
         raise SafeHttpError(SafeHttpErrorCode.TOO_MANY_REDIRECTS, "重定向次数超过上限。")
 
-    def _get_pinned(
-        self, url: str, target: ResolvedTarget, *, headers: dict[str, str] | None
+    def _request_pinned(
+        self,
+        method: str,
+        url: str,
+        target: ResolvedTarget,
+        *,
+        headers: dict[str, str] | None,
+        content: bytes | None,
     ) -> tuple[httpx.Response, httpx.Client]:
         parsed = httpx.URL(url)
         pinned_url = parsed.copy_with(host=str(target.addresses[0]), port=target.port)
         request_headers = {key: value for key, value in (headers or {}).items() if key.lower() != "host"}
         request_headers["Host"] = target.hostname
         request = httpx.Request(
-            "GET",
+            method,
             pinned_url,
             headers=request_headers,
+            content=content,
             extensions={"sni_hostname": target.hostname},
         )
         try:
@@ -178,6 +212,11 @@ class SafeHttpClient:
             return client.send(request, stream=True), client
         except httpx.HTTPError as error:
             raise SafeHttpError(SafeHttpErrorCode.REQUEST_FAILED, "平台请求失败。") from error
+
+    def _get_pinned(
+        self, url: str, target: ResolvedTarget, *, headers: dict[str, str] | None
+    ) -> tuple[httpx.Response, httpx.Client]:
+        return self._request_pinned("GET", url, target, headers=headers, content=None)
 
     def _read_limited(self, response: httpx.Response) -> bytes:
         chunks: list[bytes] = []
