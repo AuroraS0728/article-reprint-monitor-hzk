@@ -53,7 +53,7 @@ const error = ref("");
 let refreshTimer: number | undefined;
 
 const activeArticles = computed(() => articles.value.filter((article) => article.status === "ACTIVE"));
-const manualSearchArticles = computed(() => articles.value.filter((article) => article.status !== "ARCHIVED"));
+const manualSearchArticles = computed(() => articles.value.filter((article) => article.status === "ACTIVE"));
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -90,7 +90,7 @@ function runStatusLabel(status: GlobalSearchRun["status"]): string {
 
 async function queueGlobalSearch(): Promise<void> {
   if (!selectedGlobalArticleIds.value.length) {
-    error.value = "请选择至少一篇未归档文章。";
+    error.value = "请选择至少一篇状态为监测中的文章。";
     return;
   }
   globalSearching.value = true;
@@ -192,7 +192,7 @@ onBeforeUnmount(() => {
       <section>
         <h2>全网转载检测</h2>
         <p>使用已配置的合规搜索服务。手动检测只新增一次真实搜索，不会把“监测已完成”的历史文章重新纳入自动 7 天调度。</p>
-        <el-alert v-if="articles.length && !manualSearchArticles.length" title="所有文章均已归档。请先在“原创文章”中选中需要恢复的文章，再点击“恢复已选文章”。" type="warning" :closable="false" />
+        <el-alert v-if="articles.length && !manualSearchArticles.length" title="没有状态为监测中的文章。请先在“原创文章”中恢复需要检测的文章。" type="warning" :closable="false" />
         <el-empty v-else-if="!articles.length" description="暂无原创文章。" />
         <template v-else>
           <el-checkbox-group v-model="selectedGlobalArticleIds" class="article-selection">

@@ -160,15 +160,15 @@ class ManualGlobalSearchView(APIView):
         articles = list(Article.objects.filter(id__in=article_ids).only("id", "status"))
         found_ids = {article.id for article in articles}
         missing_ids = sorted(set(article_ids) - found_ids)
-        archived_ids = sorted(article.id for article in articles if article.status == ArticleStatus.ARCHIVED)
-        if missing_ids or archived_ids:
+        unavailable_ids = sorted(article.id for article in articles if article.status != ArticleStatus.ACTIVE)
+        if missing_ids or unavailable_ids:
             return Response(
                 {
                     "success": False,
                     "error": {
                         "code": "MANUAL_SEARCH_ARTICLE_UNAVAILABLE",
-                        "message": "手动全网检测仅支持未归档文章。",
-                        "details": {"missing_article_ids": missing_ids, "archived_article_ids": archived_ids},
+                        "message": "手动全网检测仅支持状态为监测中的文章。",
+                        "details": {"missing_article_ids": missing_ids, "unavailable_article_ids": unavailable_ids},
                     },
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -179,7 +179,7 @@ class ManualGlobalSearchView(APIView):
             request,
             action_type="MANUAL_GLOBAL_SEARCH_QUEUED",
             target_type="Article",
-            target_id=",".join(str(article_id) for article_id in article_ids),
+            target_id="manual-global-search",
             after_data={"article_ids": article_ids, "count": len(article_ids)},
         )
         return ok({"article_ids": article_ids, "queued_count": len(article_ids)}, status.HTTP_202_ACCEPTED)
