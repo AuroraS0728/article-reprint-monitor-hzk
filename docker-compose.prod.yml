@@ -20,6 +20,8 @@ x-backend: &backend
     - source: redis_password_app
       target: redis_password
     - field_encryption_key
+    - source: tencentcloud_wsa_apikey
+      target: tencentcloud_wsa_apikey
   volumes:
     - ${PRODUCTION_DATA_ROOT}/reports:/app/reports
     - ${PRODUCTION_DATA_ROOT}/private_uploads:/app/private_uploads
@@ -157,6 +159,8 @@ secrets:
     file: ./deploy/secrets/redis_password_redis
   field_encryption_key:
     file: ./deploy/secrets/field_encryption_key
+  tencentcloud_wsa_apikey:
+    file: ./deploy/secrets/tencentcloud_wsa_apikey
 
 networks:
   backend:
