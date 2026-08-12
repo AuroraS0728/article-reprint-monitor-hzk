@@ -1,10 +1,20 @@
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "unsafe-development-only-key")
+
+
+def _secret(name: str, default: str = "") -> str:
+    file_name = os.environ.get(f"{name}_FILE", "")
+    if file_name:
+        return Path(file_name).read_text(encoding="utf-8").strip()
+    return os.environ.get(name, default)
+
+
+SECRET_KEY = _secret("DJANGO_SECRET_KEY", "unsafe-development-only-key")
 DEBUG = os.environ.get("DJANGO_DEBUG", "false").lower() == "true"
 ALLOWED_HOSTS = [host for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",") if host]
 CSRF_TRUSTED_ORIGINS = [url for url in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if url]
@@ -70,7 +80,7 @@ DATABASES = {
         "ENGINE": "django.db.backends.mysql",
         "NAME": os.environ.get("DB_NAME", "repost_monitor"),
         "USER": os.environ.get("DB_USER", "repost_monitor"),
-        "PASSWORD": os.environ.get("DB_PASSWORD", ""),
+        "PASSWORD": _secret("DB_PASSWORD"),
         "HOST": os.environ.get("DB_HOST", "mysql"),
         "PORT": os.environ.get("DB_PORT", "3306"),
         "OPTIONS": {"charset": "utf8mb4"},
@@ -98,7 +108,7 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 PRIVATE_UPLOAD_ROOT = Path(os.environ.get("PRIVATE_UPLOAD_ROOT", BASE_DIR / "private_uploads"))
 MEDIA_ROOT = PRIVATE_UPLOAD_ROOT
-FIELD_ENCRYPTION_KEY = os.environ.get("FIELD_ENCRYPTION_KEY", "")
+FIELD_ENCRYPTION_KEY = _secret("FIELD_ENCRYPTION_KEY")
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_AGE = 28800
@@ -112,13 +122,16 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator", "OPTIONS": {"min_length": 10}},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
 ]
-CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://redis:6379/0"))
-CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://redis:6379/1")
-REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+_redis_password = _secret("REDIS_PASSWORD")
+_redis_auth = f":{quote(_redis_password, safe='')}@" if _redis_password else ""
+REDIS_URL = os.environ.get("REDIS_URL", f"redis://{_redis_auth}redis:6379/0")
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", REDIS_URL)
+CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", f"redis://{_redis_auth}redis:6379/1")
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = False
 SEARCH_PROVIDER = os.environ.get("SEARCH_PROVIDER", "")
-BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
+BRAVE_SEARCH_API_KEY = _secret("BRAVE_SEARCH_API_KEY")
+TENCENTCLOUD_WSA_APIKEY = _secret("TENCENTCLOUD_WSA_APIKEY")
 SEARCH_SIMILARITY_THRESHOLD = float(os.environ.get("SEARCH_SIMILARITY_THRESHOLD", "90"))
 SEARCH_SHORT_TITLE_LENGTH = int(os.environ.get("SEARCH_SHORT_TITLE_LENGTH", "8"))
 SEARCH_RESULT_LIMIT = int(os.environ.get("SEARCH_RESULT_LIMIT", "20"))

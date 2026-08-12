@@ -11,3 +11,5 @@ media/
 reports/
 .env
 .env.*
+tests/
+pytest.ini

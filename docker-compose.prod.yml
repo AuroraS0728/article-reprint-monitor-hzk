@@ -1,14 +1,165 @@
-services:
-  web:
-    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2
-    ports: []
-  frontend:
-    profiles: [disabled]
-  nginx:
-    profiles: []
-    ports: ["80:80"]
-  mysql:
-    ports: []
-  redis:
-    ports: []
+name: article-reprint-monitor-prod
 
+x-backend: &backend
+  image: article-reprint-monitor-backend:${APP_VERSION:-v1.0.0}
+  env_file: ${PRODUCTION_ENV_FILE:-deploy/production.env}
+  restart: unless-stopped
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+    - /home/appuser:size=16m,uid=10001,gid=10001,mode=700
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  secrets:
+    - django_secret_key
+    - source: db_password_app
+      target: db_password
+    - source: redis_password_app
+      target: redis_password
+    - field_encryption_key
+  volumes:
+    - ${PRODUCTION_DATA_ROOT}/reports:/app/reports
+    - ${PRODUCTION_DATA_ROOT}/private_uploads:/app/private_uploads
+    - ${PRODUCTION_DATA_ROOT}/staticfiles:/app/staticfiles
+  networks:
+    - backend
+    - egress
+
+services:
+  mysql:
+    image: mysql:8.4.4
+    user: "999:999"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /var/run/mysqld:size=16m,uid=999,gid=999,mode=755
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD_FILE: /run/secrets/db_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/db_root_password
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --skip-name-resolve
+      - --local-infile=0
+      - --max-connections=100
+      - --innodb-buffer-pool-size=256M
+    secrets:
+      - source: db_password_mysql
+        target: db_password
+      - source: db_root_password_mysql
+        target: db_root_password
+    volumes:
+      - ${PRODUCTION_DATA_ROOT}/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$(cat /run/secrets/db_root_password) mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      - backend
+
+  redis:
+    image: redis:7.4.2-alpine
+    user: "999:1000"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    entrypoint: ["/usr/local/bin/article-monitor-redis-entrypoint.sh"]
+    secrets:
+      - source: redis_password_redis
+        target: redis_password
+    volumes:
+      - ${PRODUCTION_DATA_ROOT}/redis:/data
+      - ./deploy/redis-entrypoint.sh:/usr/local/bin/article-monitor-redis-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$(cat /run/secrets/redis_password)\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - backend
+
+  migrate:
+    <<: *backend
+    restart: "no"
+    command: ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    <<: *backend
+    command: ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "2", "--timeout", "60", "--access-logfile", "-"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          request=urllib.request.Request('http://127.0.0.1:8000/api/v1/health/',
+          headers={'Host':'monitor.wiseprop.online','X-Forwarded-Proto':'https'});
+          urllib.request.urlopen(request,timeout=5)
+      interval: 15s
+      timeout: 8s
+      retries: 10
+      start_period: 20s
+    ports:
+      - "127.0.0.1:18000:8000"
+
+  celery_worker:
+    <<: *backend
+    command: ["celery", "-A", "config", "worker", "-l", "INFO", "-Q", "http,search,report", "-c", "1"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  celery_beat:
+    <<: *backend
+    command: ["celery", "-A", "config", "beat", "-l", "INFO", "--schedule", "/tmp/celerybeat-schedule"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+secrets:
+  django_secret_key:
+    file: ./deploy/secrets/django_secret_key
+  db_password_app:
+    file: ./deploy/secrets/db_password_app
+  db_password_mysql:
+    file: ./deploy/secrets/db_password_mysql
+  db_root_password_mysql:
+    file: ./deploy/secrets/db_root_password_mysql
+  redis_password_app:
+    file: ./deploy/secrets/redis_password_app
+  redis_password_redis:
+    file: ./deploy/secrets/redis_password_redis
+  field_encryption_key:
+    file: ./deploy/secrets/field_encryption_key
+
+networks:
+  backend:
+    internal: true
+  egress:
+    internal: false

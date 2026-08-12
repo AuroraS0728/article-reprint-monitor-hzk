@@ -17,6 +17,7 @@ from apps.accounts.models import User
 from apps.articles.models import Article
 from apps.audit.services import record_audit
 from apps.core.permissions import CanOperate, IsAdministrator
+from apps.core.serializers import EmptySerializer
 from apps.core.views import ok
 from apps.platforms.models import Platform
 
@@ -44,6 +45,7 @@ class RepostRecordListView(APIView):
 
 class GlobalRepostExportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EmptySerializer
 
     def get(self, request: Request) -> HttpResponse:
         start_date = parse_date(request.query_params.get("start_date", ""))

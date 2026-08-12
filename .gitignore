@@ -17,6 +17,8 @@ media/
 private_uploads/
 backups/
 secrets/
+deploy/production.env
+deploy/secrets/
 media/private/
 logs/
 cookies.json
