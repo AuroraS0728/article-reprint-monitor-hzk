@@ -48,6 +48,7 @@ from apps.reposts.views import (
 from apps.sources.views import (
     ArticleIngestConflictListView,
     ArticleIngestConflictReviewView,
+    ManualGlobalSearchView,
     SourceArticleIngestView,
 )
 
@@ -65,6 +66,7 @@ urlpatterns = [
     path("source-ingest/articles", SourceArticleIngestView.as_view()),
     path("source-ingest-conflicts", ArticleIngestConflictListView.as_view()),
     path("source-ingest-conflicts/<int:pk>/review", ArticleIngestConflictReviewView.as_view()),
+    path("global-search-runs", ManualGlobalSearchView.as_view()),
     path("articles/<int:pk>", ArticleDetailView.as_view()),
     path("articles/<int:pk>/reposts", ArticleRepostsView.as_view()),
     path("articles/bulk-paste", ArticleBulkPasteView.as_view()),

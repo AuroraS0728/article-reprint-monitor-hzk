@@ -1,12 +1,35 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { api, downloadApiFile } from "./api";
 
-type Article = { id: number; title: string; published_date: string };
+type Article = {
+  id: number;
+  title: string;
+  published_date: string;
+  status: "ACTIVE" | "ARCHIVED" | "STOPPED";
+  monitoring_status: "PENDING" | "ACTIVE" | "COMPLETED" | "ERROR";
+  last_searched_at: string | null;
+  next_search_at: string | null;
+  repost_url_count: number;
+};
 type Platform = { id: number; name: string; status: string };
 type Batch = { id: number; trigger: string; status: string; article_ids: number[]; platform_ids: number[]; created_at: string };
 type MatrixItem = { result_id: number; article_id: number; platform_id: number; status: "FOUND" | "NOT_FOUND" | "UNKNOWN"; reason_code: string; completed_at: string | null };
 type Repost = { id: number; original_url: string; normalized_url: string; final_url: string; repost_title: string; repost_published_display: string; first_discovered_at: string; last_checked_at: string; data_source: string };
+type GlobalSearchRun = {
+  id: number;
+  article_id: number;
+  status: "PENDING" | "RUNNING" | "SUCCESS" | "ERROR";
+  provider: string;
+  candidate_count: number;
+  matched_count: number;
+  new_repost_count: number;
+  error_code: string;
+  error_message: string;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+};
 
 const articles = ref<Article[]>([]);
 const platforms = ref<Platform[]>([]);
@@ -18,34 +41,71 @@ const useAllEnabledPlatforms = ref(true);
 const dateRange = ref<[string, string] | null>(null);
 const matrixDate = ref("");
 const reposts = ref<Repost[]>([]);
+const globalRuns = ref<GlobalSearchRun[]>([]);
+const selectedGlobalArticleIds = ref<number[]>([]);
 const repostDialogOpen = ref(false);
 const repostLoading = ref(false);
 const loading = ref(true);
 const submitting = ref(false);
 const exporting = ref(false);
+const globalSearching = ref(false);
 const error = ref("");
 let refreshTimer: number | undefined;
+
+const activeArticles = computed(() => articles.value.filter((article) => article.status === "ACTIVE"));
+const manualSearchArticles = computed(() => articles.value.filter((article) => article.status !== "ARCHIVED"));
 
 async function load(): Promise<void> {
   loading.value = true;
   error.value = "";
   try {
-    const [articleData, platformData, batchData, matrixData, defaults] = await Promise.all([
-      api<Article[]>("/articles?status=ACTIVE"),
+    const [articleData, platformData, batchData, matrixData, defaults, runData] = await Promise.all([
+      api<Article[]>("/articles"),
       api<Platform[]>("/platforms"),
       api<Batch[]>("/detection-batches"),
       api<{ matrix: Record<string, MatrixItem> }>(`/status-matrix${matrixDate.value ? `?as_of=${matrixDate.value}` : ""}`),
       api<{ article_ids: number[] }>("/detection-selection-defaults"),
+      api<GlobalSearchRun[]>("/global-search-runs"),
     ]);
     articles.value = articleData;
     platforms.value = platformData.filter((platform) => platform.status === "ENABLED");
     batches.value = batchData;
     matrix.value = Object.values(matrixData.matrix);
-    selectedArticleIds.value = defaults.article_ids;
+    globalRuns.value = runData;
+    selectedArticleIds.value = defaults.article_ids.filter((articleId) => activeArticles.value.some((article) => article.id === articleId));
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "加载监测数据失败";
   } finally {
     loading.value = false;
+  }
+}
+
+function globalStatusLabel(status: Article["monitoring_status"]): string {
+  return { PENDING: "待监测", ACTIVE: "监测中", COMPLETED: "监测已完成", ERROR: "异常" }[status];
+}
+
+function runStatusLabel(status: GlobalSearchRun["status"]): string {
+  return { PENDING: "排队中", RUNNING: "搜索中", SUCCESS: "已完成", ERROR: "失败" }[status];
+}
+
+async function queueGlobalSearch(): Promise<void> {
+  if (!selectedGlobalArticleIds.value.length) {
+    error.value = "请选择至少一篇未归档文章。";
+    return;
+  }
+  globalSearching.value = true;
+  error.value = "";
+  try {
+    await api("/global-search-runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ article_ids: selectedGlobalArticleIds.value }),
+    });
+    await load();
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : "提交全网检测失败";
+  } finally {
+    globalSearching.value = false;
   }
 }
 
@@ -129,11 +189,38 @@ onBeforeUnmount(() => {
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <el-skeleton v-else-if="loading" :rows="4" animated />
     <template v-else>
-      <el-empty v-if="!articles.length" description="暂无可检测文章，请先录入或导入。" />
+      <section>
+        <h2>全网转载检测</h2>
+        <p>使用已配置的合规搜索服务。手动检测只新增一次真实搜索，不会把“监测已完成”的历史文章重新纳入自动 7 天调度。</p>
+        <el-alert v-if="articles.length && !manualSearchArticles.length" title="所有文章均已归档。请先在“原创文章”中选中需要恢复的文章，再点击“恢复已选文章”。" type="warning" :closable="false" />
+        <el-empty v-else-if="!articles.length" description="暂无原创文章。" />
+        <template v-else>
+          <el-checkbox-group v-model="selectedGlobalArticleIds" class="article-selection">
+            <el-checkbox v-for="article in manualSearchArticles" :key="article.id" :value="article.id">
+              {{ article.title }}（{{ article.published_date }}，{{ globalStatusLabel(article.monitoring_status) }}，已发现 {{ article.repost_url_count }} 条）
+            </el-checkbox>
+          </el-checkbox-group>
+          <el-button type="primary" :loading="globalSearching" @click="queueGlobalSearch">立即全网检测</el-button>
+        </template>
+        <el-table v-if="globalRuns.length" :data="globalRuns" class="run-table">
+          <el-table-column label="文章" min-width="220"><template #default="scope">{{ articleName(scope.row.article_id) }}</template></el-table-column>
+          <el-table-column label="状态" width="100"><template #default="scope">{{ runStatusLabel(scope.row.status) }}</template></el-table-column>
+          <el-table-column prop="provider" label="搜索服务" width="130" />
+          <el-table-column prop="candidate_count" label="候选数" width="90" />
+          <el-table-column prop="matched_count" label="匹配数" width="90" />
+          <el-table-column prop="new_repost_count" label="新转载" width="90" />
+          <el-table-column prop="completed_at" label="完成时间" min-width="170" />
+          <el-table-column label="失败原因" min-width="160"><template #default="scope">{{ scope.row.error_code || scope.row.error_message || "—" }}</template></el-table-column>
+        </el-table>
+        <el-empty v-else description="尚无全网搜索运行记录。" />
+      </section>
+      <h2>固定平台检测（待验证适配器）</h2>
+      <el-alert title="此区域仅适用于已验证的平台适配器；当前不会把平台检测结果伪装成全网搜索结果。" type="info" :closable="false" />
+      <el-empty v-if="!activeArticles.length" description="暂无可进行固定平台检测的未归档文章。" />
       <el-form v-else class="monitoring-form" label-position="top">
         <el-form-item label="默认选择：上次已完成检测后新录入或新导入的文章">
           <el-checkbox-group v-model="selectedArticleIds">
-            <el-checkbox v-for="article in articles" :key="article.id" :value="article.id">{{ article.title }}（{{ article.published_date }}）</el-checkbox>
+            <el-checkbox v-for="article in activeArticles" :key="article.id" :value="article.id">{{ article.title }}（{{ article.published_date }}）</el-checkbox>
           </el-checkbox-group>
         </el-form-item>
         <el-form-item label="原创文章发布日期范围">
@@ -151,7 +238,7 @@ onBeforeUnmount(() => {
         <el-button @click="load">刷新后台已有数据</el-button>
         <el-button type="success" :loading="exporting" @click="exportExcel">{{ exporting ? "正在生成..." : "导出 Excel" }}</el-button>
       </el-form>
-      <h2>检测批次</h2>
+      <h2>固定平台检测批次</h2>
       <el-empty v-if="!batches.length" description="尚未创建检测批次。" />
       <el-table v-else :data="batches"><el-table-column prop="id" label="批次" width="90" /><el-table-column prop="trigger" label="类型" /><el-table-column prop="status" label="状态" /><el-table-column prop="created_at" label="创建时间" /></el-table>
       <h2>状态矩阵</h2>
@@ -164,5 +251,5 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.monitoring-panel{display:grid;gap:16px}.monitoring-form{max-width:900px}.monitoring-form .el-checkbox-group{display:flex;flex-direction:column;gap:8px}.monitoring-form .el-checkbox{margin-right:0}
+.monitoring-panel{display:grid;gap:16px}.monitoring-form{max-width:900px}.monitoring-form .el-checkbox-group,.article-selection{display:flex;flex-direction:column;gap:8px;margin:12px 0}.monitoring-form .el-checkbox{margin-right:0}.run-table{margin-top:16px}
 </style>

@@ -11,19 +11,21 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.models import User
-from apps.articles.models import Article
+from apps.articles.models import Article, ArticleStatus
 from apps.audit.services import record_audit
-from apps.core.permissions import IsAdministrator
+from apps.core.permissions import CanOperate, IsAdministrator
 from apps.core.views import ok
 
 from .authentication import SourceTokenAuthentication
-from .models import ArticleIngestConflict, ArticleIngestConflictStatus, SourceIngestToken
+from .models import ArticleIngestConflict, ArticleIngestConflictStatus, SearchRun, SourceIngestToken
 from .serializers import (
     ArticleIngestConflictReviewSerializer,
     ArticleIngestConflictSerializer,
+    ManualGlobalSearchSerializer,
     SourceArticleIngestSerializer,
 )
 from .services import approve_source_ingest_conflict, ingest_source_article, link_source_ingest_conflict
+from .tasks import search_article_reposts
 
 
 class SourceArticleIngestView(APIView):
@@ -118,6 +120,69 @@ class ArticleIngestConflictListView(APIView):
         if status_filter := request.query_params.get("status"):
             conflicts = conflicts.filter(status=status_filter)
         return ok(ArticleIngestConflictSerializer(conflicts[:200], many=True).data)
+
+
+class ManualGlobalSearchView(APIView):
+    """Queue an explicit one-off provider search without changing lifecycle scheduling."""
+
+    permission_classes = [CanOperate]
+    serializer_class = ManualGlobalSearchSerializer
+
+    def get(self, request: Request) -> Response:
+        article_ids = request.query_params.getlist("article_id")
+        queryset = SearchRun.objects.select_related("article").order_by("-created_at", "-id")
+        if article_ids:
+            queryset = queryset.filter(article_id__in=article_ids)
+        return ok(
+            [
+                {
+                    "id": run.id,
+                    "article_id": run.article_id,
+                    "status": run.status,
+                    "provider": run.provider,
+                    "candidate_count": run.candidate_count,
+                    "matched_count": run.matched_count,
+                    "new_repost_count": run.new_repost_count,
+                    "error_code": run.error_code,
+                    "error_message": run.error_message,
+                    "started_at": run.started_at,
+                    "completed_at": run.completed_at,
+                    "created_at": run.created_at,
+                }
+                for run in queryset[:200]
+            ]
+        )
+
+    def post(self, request: Request) -> Response:
+        serializer = ManualGlobalSearchSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        article_ids = serializer.validated_data["article_ids"]
+        articles = list(Article.objects.filter(id__in=article_ids).only("id", "status"))
+        found_ids = {article.id for article in articles}
+        missing_ids = sorted(set(article_ids) - found_ids)
+        archived_ids = sorted(article.id for article in articles if article.status == ArticleStatus.ARCHIVED)
+        if missing_ids or archived_ids:
+            return Response(
+                {
+                    "success": False,
+                    "error": {
+                        "code": "MANUAL_SEARCH_ARTICLE_UNAVAILABLE",
+                        "message": "手动全网检测仅支持未归档文章。",
+                        "details": {"missing_article_ids": missing_ids, "archived_article_ids": archived_ids},
+                    },
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        for article in articles:
+            search_article_reposts.delay(article.id, manual=True)
+        record_audit(
+            request,
+            action_type="MANUAL_GLOBAL_SEARCH_QUEUED",
+            target_type="Article",
+            target_id=",".join(str(article_id) for article_id in article_ids),
+            after_data={"article_ids": article_ids, "count": len(article_ids)},
+        )
+        return ok({"article_ids": article_ids, "queued_count": len(article_ids)}, status.HTTP_202_ACCEPTED)
 
 
 class ArticleIngestConflictReviewView(APIView):

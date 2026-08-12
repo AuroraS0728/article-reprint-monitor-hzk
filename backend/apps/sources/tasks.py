@@ -15,7 +15,7 @@ from .services import purge_expired_source_articles, search_article
 
 
 @shared_task(bind=True, max_retries=3, name="apps.sources.tasks.search_article_reposts")
-def search_article_reposts(self: Any, article_id: int) -> int | str:
+def search_article_reposts(self: Any, article_id: int, *, manual: bool = False) -> int | str:
     lock_client = redis.Redis.from_url(settings.REDIS_URL)
     lock = lock_client.lock(
         f"global-repost-search:article:{article_id}",
@@ -29,9 +29,9 @@ def search_article_reposts(self: Any, article_id: int) -> int | str:
         if article is None:
             return "ARTICLE_NOT_FOUND"
         now = timezone.now()
-        if article.monitoring_status != ArticleMonitoringStatus.ACTIVE:
+        if not manual and article.monitoring_status != ArticleMonitoringStatus.ACTIVE:
             return "NOT_ACTIVE"
-        if not article.monitor_until or now >= article.monitor_until:
+        if not manual and (not article.monitor_until or now >= article.monitor_until):
             article.monitoring_status = ArticleMonitoringStatus.COMPLETED
             article.next_search_at = None
             article.save(update_fields=["monitoring_status", "next_search_at", "updated_at"])

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -31,6 +32,7 @@ from apps.sources.services import (
     purge_expired_source_articles,
     search_article,
 )
+from apps.sources.tasks import search_article_reposts
 from apps.sources.token_services import create_source_token
 from search_providers.exceptions import SearchProviderRateLimited
 from search_providers.types import SearchCandidate
@@ -149,6 +151,38 @@ def test_expired_first_ingest_is_completed_without_restarting_monitoring(source:
     )
     assert result.article.monitor_until == original_until
     assert result.article.monitoring_status == ArticleMonitoringStatus.COMPLETED
+
+
+@pytest.mark.django_db
+def test_manual_global_search_allows_completed_article_without_restarting_lifecycle(
+    source: Source, operator: User
+) -> None:
+    article = create_source_article(source=source, operator=operator, days_old=8)
+    original_next_search_at = article.next_search_at
+    with patch("apps.sources.tasks.search_article", return_value=SimpleNamespace(id=77, status="SUCCESS")) as search:
+        assert search_article_reposts.run(article.id, manual=True) == 77
+    article.refresh_from_db()
+    assert search.called
+    assert article.monitoring_status == ArticleMonitoringStatus.COMPLETED
+    assert article.next_search_at == original_next_search_at
+
+
+@pytest.mark.django_db
+def test_manual_global_search_api_queues_unarchived_articles_and_rejects_archived(
+    source: Source, operator: User
+) -> None:
+    article = create_source_article(source=source, operator=operator)
+    client = APIClient()
+    client.force_authenticate(operator)
+    with patch("apps.sources.views.search_article_reposts.delay") as delay:
+        response = client.post("/api/v1/global-search-runs", {"article_ids": [article.id]}, format="json")
+    assert response.status_code == 202
+    assert response.json()["data"]["queued_count"] == 1
+    delay.assert_called_once_with(article.id, manual=True)
+    article.status = "ARCHIVED"
+    article.save(update_fields=["status"])
+    response = client.post("/api/v1/global-search-runs", {"article_ids": [article.id]}, format="json")
+    assert response.status_code == 400
 
 
 def test_url_canonicalization_and_similarity_threshold() -> None:

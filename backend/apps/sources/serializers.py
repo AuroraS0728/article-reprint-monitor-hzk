@@ -22,6 +22,18 @@ class SourceArticleIngestSerializer(serializers.Serializer[object]):
         return value.strip()
 
 
+class ManualGlobalSearchSerializer(serializers.Serializer[object]):
+    article_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        min_length=1,
+        max_length=50,
+        allow_empty=False,
+    )
+
+    def validate_article_ids(self, value: list[int]) -> list[int]:
+        return list(dict.fromkeys(value))
+
+
 class ArticleIngestConflictSerializer(serializers.ModelSerializer[ArticleIngestConflict]):
     class Meta:
         model = ArticleIngestConflict
