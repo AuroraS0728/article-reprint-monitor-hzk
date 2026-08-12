@@ -30,6 +30,18 @@ type GlobalSearchRun = {
   completed_at: string | null;
   created_at: string;
 };
+type GlobalSearchCandidate = {
+  id: number;
+  title: string;
+  site_name: string;
+  site_domain: string;
+  raw_url: string;
+  canonical_url: string;
+  published_at: string | null;
+  disposition: "EXCLUDED_SOURCE" | "EXCLUDED_ORIGINAL" | "EXCLUDED_TOO_EARLY" | "NOT_MATCHED" | "MATCHED";
+  similarity_score: string | null;
+  reason_code: string;
+};
 
 const articles = ref<Article[]>([]);
 const platforms = ref<Platform[]>([]);
@@ -49,6 +61,10 @@ const loading = ref(true);
 const submitting = ref(false);
 const exporting = ref(false);
 const globalSearching = ref(false);
+const candidateDialogOpen = ref(false);
+const candidateLoading = ref(false);
+const selectedRun = ref<GlobalSearchRun | null>(null);
+const runCandidates = ref<GlobalSearchCandidate[]>([]);
 const error = ref("");
 let refreshTimer: number | undefined;
 
@@ -86,6 +102,30 @@ function globalStatusLabel(status: Article["monitoring_status"]): string {
 
 function runStatusLabel(status: GlobalSearchRun["status"]): string {
   return { PENDING: "排队中", RUNNING: "搜索中", SUCCESS: "已完成", ERROR: "失败" }[status];
+}
+
+function candidateStatusLabel(disposition: GlobalSearchCandidate["disposition"]): string {
+  return {
+    EXCLUDED_SOURCE: "原创来源链接",
+    EXCLUDED_ORIGINAL: "原创文章链接",
+    EXCLUDED_TOO_EARLY: "发布时间早于原创",
+    NOT_MATCHED: "未匹配",
+    MATCHED: "已匹配转载",
+  }[disposition];
+}
+
+async function showCandidates(run: GlobalSearchRun): Promise<void> {
+  selectedRun.value = run;
+  candidateDialogOpen.value = true;
+  candidateLoading.value = true;
+  runCandidates.value = [];
+  try {
+    runCandidates.value = await api<GlobalSearchCandidate[]>(`/global-search-runs/${run.id}/candidates`);
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : "候选页面加载失败";
+  } finally {
+    candidateLoading.value = false;
+  }
 }
 
 async function queueGlobalSearch(): Promise<void> {
@@ -206,13 +246,26 @@ onBeforeUnmount(() => {
           <el-table-column label="文章" min-width="220"><template #default="scope">{{ articleName(scope.row.article_id) }}</template></el-table-column>
           <el-table-column label="状态" width="100"><template #default="scope">{{ runStatusLabel(scope.row.status) }}</template></el-table-column>
           <el-table-column prop="provider" label="搜索服务" width="130" />
-          <el-table-column prop="candidate_count" label="候选数" width="90" />
+          <el-table-column label="候选数" width="90"><template #default="scope"><el-button link type="primary" :disabled="scope.row.candidate_count === 0" @click="showCandidates(scope.row)">{{ scope.row.candidate_count }}</el-button></template></el-table-column>
           <el-table-column prop="matched_count" label="匹配数" width="90" />
           <el-table-column prop="new_repost_count" label="新转载" width="90" />
           <el-table-column prop="completed_at" label="完成时间" min-width="170" />
           <el-table-column label="失败原因" min-width="160"><template #default="scope">{{ scope.row.error_code || scope.row.error_message || "—" }}</template></el-table-column>
         </el-table>
         <el-empty v-else description="尚无全网搜索运行记录。" />
+        <el-dialog v-model="candidateDialogOpen" :title="`搜索候选：${selectedRun ? articleName(selectedRun.article_id) : ''}`" width="90%">
+          <p>候选页只是搜索服务返回并参与比对的网页，不等同于确认转载。只有“已匹配转载”会进入正式转载记录。</p>
+          <el-skeleton v-if="candidateLoading" :rows="5" animated />
+          <el-empty v-else-if="!runCandidates.length" description="该旧搜索记录未保存候选明细；请重新执行一次全网检测。" />
+          <el-table v-else :data="runCandidates">
+            <el-table-column prop="site_name" label="站点" width="160"><template #default="scope">{{ scope.row.site_name || scope.row.site_domain || "—" }}</template></el-table-column>
+            <el-table-column prop="title" label="页面标题" min-width="240" />
+            <el-table-column label="链接" min-width="280"><template #default="scope"><a :href="scope.row.canonical_url || scope.row.raw_url" target="_blank" rel="noopener noreferrer">{{ scope.row.canonical_url || scope.row.raw_url }}</a></template></el-table-column>
+            <el-table-column prop="published_at" label="发布时间" width="180"><template #default="scope">{{ scope.row.published_at || "无" }}</template></el-table-column>
+            <el-table-column label="判定" width="150"><template #default="scope">{{ candidateStatusLabel(scope.row.disposition) }}</template></el-table-column>
+            <el-table-column prop="similarity_score" label="标题分" width="100"><template #default="scope">{{ scope.row.similarity_score ?? "—" }}</template></el-table-column>
+          </el-table>
+        </el-dialog>
       </section>
       <h2>固定平台检测（待验证适配器）</h2>
       <el-alert title="此区域仅适用于已验证的平台适配器；当前不会把平台检测结果伪装成全网搜索结果。" type="info" :closable="false" />

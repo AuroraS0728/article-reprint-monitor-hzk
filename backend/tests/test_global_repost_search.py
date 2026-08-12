@@ -22,7 +22,7 @@ from apps.reposts.export_services import (
     sanitize_excel_sheet_name,
 )
 from apps.reposts.models import RepostRecord
-from apps.sources.models import SearchRunStatus, Source
+from apps.sources.models import SearchCandidateDisposition, SearchRunCandidate, SearchRunStatus, Source
 from apps.sources.services import (
     _next_search_time,
     canonicalize_http_url,
@@ -185,6 +185,25 @@ def test_manual_global_search_api_queues_unarchived_articles_and_rejects_archive
     assert response.status_code == 400
 
 
+@pytest.mark.django_db
+def test_search_run_candidates_are_available_to_authenticated_readers(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    run = search_article(
+        article,
+        provider=StaticProvider(
+            [SearchCandidate(title="候选页", url="https://finance.example.com/a", site_name="示例财经")]
+        ),
+    )
+    client = APIClient()
+    client.force_authenticate(operator)
+    response = client.get(f"/api/v1/global-search-runs/{run.id}/candidates")
+    assert response.status_code == 200
+    candidate = response.json()["data"][0]
+    assert candidate["title"] == "候选页"
+    assert candidate["site_name"] == "示例财经"
+    assert candidate["canonical_url"] == "https://finance.example.com/a"
+
+
 def test_url_canonicalization_and_similarity_threshold() -> None:
     assert canonicalize_http_url("HTTPS://Example.COM:443/a?utm_source=x&a=1#fragment") == "https://example.com/a?a=1"
     with pytest.raises(ValueError):
@@ -220,6 +239,13 @@ def test_global_search_deduplicates_urls_excludes_source_and_preserves_history(s
     ]
     first_run = search_article(article, provider=StaticProvider(candidates))
     assert first_run.status == SearchRunStatus.SUCCESS
+    assert SearchRunCandidate.objects.filter(search_run=first_run).count() == 3
+    assert (
+        SearchRunCandidate.objects.filter(
+            search_run=first_run, disposition=SearchCandidateDisposition.EXCLUDED_SOURCE
+        ).count()
+        == 1
+    )
     assert RepostRecord.objects.filter(article=article).count() == 2
     first_record = RepostRecord.objects.filter(article=article).order_by("canonical_url").first()
     assert first_record is not None

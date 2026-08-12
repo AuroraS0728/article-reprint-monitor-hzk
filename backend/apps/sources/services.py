@@ -36,7 +36,9 @@ from search_providers.types import SearchCandidate
 from .models import (
     ArticleIngestConflict,
     ArticleIngestConflictStatus,
+    SearchCandidateDisposition,
     SearchRun,
+    SearchRunCandidate,
     SearchRunStatus,
     Source,
 )
@@ -666,10 +668,64 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
         for canonical, candidate in all_candidates.items():
             belongs_to_source = bool(article.source is not None and is_url_for_source(article.source, canonical))
             if belongs_to_source:
+                SearchRunCandidate.objects.create(
+                    search_run=run,
+                    title=candidate.title[:500],
+                    site_name=candidate.site_name[:255],
+                    site_domain=candidate.domain[:253],
+                    raw_url=candidate.url,
+                    canonical_url=canonical,
+                    canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
+                    published_at=candidate.published_at,
+                    disposition=SearchCandidateDisposition.EXCLUDED_SOURCE,
+                    reason_code="SOURCE_DOMAIN",
+                )
                 continue
-            if canonical == article.original_url or _candidate_is_too_early(article, candidate):
+            if canonical == article.original_url:
+                SearchRunCandidate.objects.create(
+                    search_run=run,
+                    title=candidate.title[:500],
+                    site_name=candidate.site_name[:255],
+                    site_domain=candidate.domain[:253],
+                    raw_url=candidate.url,
+                    canonical_url=canonical,
+                    canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
+                    published_at=candidate.published_at,
+                    disposition=SearchCandidateDisposition.EXCLUDED_ORIGINAL,
+                    reason_code="ORIGINAL_URL",
+                )
+                continue
+            if _candidate_is_too_early(article, candidate):
+                SearchRunCandidate.objects.create(
+                    search_run=run,
+                    title=candidate.title[:500],
+                    site_name=candidate.site_name[:255],
+                    site_domain=candidate.domain[:253],
+                    raw_url=candidate.url,
+                    canonical_url=canonical,
+                    canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
+                    published_at=candidate.published_at,
+                    disposition=SearchCandidateDisposition.EXCLUDED_TOO_EARLY,
+                    reason_code="PUBLISHED_TOO_EARLY",
+                )
                 continue
             match = compare_titles(article.title, candidate)
+            candidate_record = SearchRunCandidate(
+                search_run=run,
+                title=candidate.title[:500],
+                site_name=candidate.site_name[:255],
+                site_domain=candidate.domain[:253],
+                raw_url=candidate.url,
+                canonical_url=canonical,
+                canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
+                published_at=candidate.published_at,
+                disposition=(
+                    SearchCandidateDisposition.MATCHED if match.matched else SearchCandidateDisposition.NOT_MATCHED
+                ),
+                similarity_score=match.similarity_score,
+                reason_code="TITLE_MATCH" if match.matched else "TITLE_NOT_MATCHED",
+            )
+            candidate_record.save()
             if not match.matched:
                 continue
             matched_count += 1

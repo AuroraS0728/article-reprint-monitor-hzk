@@ -17,7 +17,7 @@ from apps.core.permissions import CanOperate, IsAdministrator
 from apps.core.views import ok
 
 from .authentication import SourceTokenAuthentication
-from .models import ArticleIngestConflict, ArticleIngestConflictStatus, SearchRun, SourceIngestToken
+from .models import ArticleIngestConflict, ArticleIngestConflictStatus, SearchRun, SearchRunCandidate, SourceIngestToken
 from .serializers import (
     ArticleIngestConflictReviewSerializer,
     ArticleIngestConflictSerializer,
@@ -183,6 +183,31 @@ class ManualGlobalSearchView(APIView):
             after_data={"article_ids": article_ids, "count": len(article_ids)},
         )
         return ok({"article_ids": article_ids, "queued_count": len(article_ids)}, status.HTTP_202_ACCEPTED)
+
+
+class SearchRunCandidateListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request: Request, pk: int) -> Response:
+        get_object_or_404(SearchRun, pk=pk)
+        candidates = SearchRunCandidate.objects.filter(search_run_id=pk)
+        return ok(
+            [
+                {
+                    "id": candidate.id,
+                    "title": candidate.title,
+                    "site_name": candidate.site_name,
+                    "site_domain": candidate.site_domain,
+                    "raw_url": candidate.raw_url,
+                    "canonical_url": candidate.canonical_url,
+                    "published_at": candidate.published_at,
+                    "disposition": candidate.disposition,
+                    "similarity_score": candidate.similarity_score,
+                    "reason_code": candidate.reason_code,
+                }
+                for candidate in candidates
+            ]
+        )
 
 
 class ArticleIngestConflictReviewView(APIView):

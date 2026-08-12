@@ -128,3 +128,38 @@ class SearchRun(models.Model):
         db_table = "sources_search_run"
         ordering = ["-created_at", "-id"]
         indexes = [models.Index(fields=["article", "status", "created_at"])]
+
+
+class SearchCandidateDisposition(models.TextChoices):
+    PENDING = "PENDING", "待比对"
+    EXCLUDED_SOURCE = "EXCLUDED_SOURCE", "原创来源链接"
+    EXCLUDED_ORIGINAL = "EXCLUDED_ORIGINAL", "原创文章链接"
+    EXCLUDED_TOO_EARLY = "EXCLUDED_TOO_EARLY", "发布时间早于原创"
+    NOT_MATCHED = "NOT_MATCHED", "未匹配"
+    MATCHED = "MATCHED", "已匹配转载"
+
+
+class SearchRunCandidate(models.Model):
+    """A sanitized, inspectable candidate returned by one completed provider run."""
+
+    search_run = models.ForeignKey(SearchRun, related_name="candidates", on_delete=models.CASCADE)
+    title = models.CharField(max_length=500)
+    site_name = models.CharField(max_length=255, blank=True)
+    site_domain = models.CharField(max_length=253, blank=True, db_index=True)
+    raw_url = models.URLField(max_length=2048)
+    canonical_url = models.URLField(max_length=2048)
+    canonical_url_hash = models.CharField(max_length=64)
+    published_at = models.DateTimeField(null=True, blank=True)
+    disposition = models.CharField(
+        max_length=32, choices=SearchCandidateDisposition.choices, default=SearchCandidateDisposition.PENDING
+    )
+    similarity_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    reason_code = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "sources_search_run_candidate"
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(fields=["search_run", "canonical_url_hash"], name="uniq_search_run_candidate_url")
+        ]
