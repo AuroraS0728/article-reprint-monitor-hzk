@@ -56,6 +56,7 @@ from apps.sources.views import (
     ArticleIngestConflictReviewView,
     ManualGlobalSearchView,
     SearchRunCandidateListView,
+    SearchRunCandidateReviewView,
     SourceArticleIngestView,
 )
 from apps.sources.views_owned import OwnedChannelReadingView
@@ -87,6 +88,7 @@ urlpatterns = [
     ),
     path("global-search-runs", ManualGlobalSearchView.as_view()),
     path("global-search-runs/<int:pk>/candidates", SearchRunCandidateListView.as_view()),
+    path("search-candidates/<int:pk>/review", SearchRunCandidateReviewView.as_view()),
     path("reading-monitor/owned-publications", OwnedChannelReadingView.as_view()),
     path("articles/<int:pk>", ArticleDetailView.as_view()),
     path("articles/<int:pk>/reposts", ArticleRepostsView.as_view()),

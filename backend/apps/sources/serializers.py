@@ -77,6 +77,23 @@ class SearchRunCandidateSerializer(serializers.ModelSerializer[SearchRunCandidat
         read_only_fields = fields
 
 
+class SearchRunCandidateReviewSerializer(serializers.Serializer[object]):
+    """Human classification is explicit: no candidate is silently discarded."""
+
+    action = serializers.ChoiceField(
+        choices=["CONFIRM_REPOST", "CONFIRM_OWNED", "EXCLUDE"],
+    )
+    reason = serializers.CharField(max_length=450, trim_whitespace=True, allow_blank=False)
+    owned_channel_id = serializers.IntegerField(required=False, min_value=1)
+
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        if attrs["action"] == "CONFIRM_OWNED" and not attrs.get("owned_channel_id"):
+            raise serializers.ValidationError({"owned_channel_id": "归入阅读量时必须选择自有渠道。"})
+        if attrs["action"] != "CONFIRM_OWNED" and attrs.get("owned_channel_id"):
+            raise serializers.ValidationError({"owned_channel_id": "仅归入阅读量时可以指定自有渠道。"})
+        return attrs
+
+
 class ArticleIngestConflictSerializer(serializers.ModelSerializer[ArticleIngestConflict]):
     class Meta:
         model = ArticleIngestConflict

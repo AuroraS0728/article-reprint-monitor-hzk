@@ -873,6 +873,157 @@ def _classify_search_candidate(
     )
 
 
+def _candidate_as_search_candidate(record: SearchRunCandidate) -> SearchCandidate:
+    return SearchCandidate(
+        title=record.title,
+        url=record.canonical_url,
+        domain=record.site_domain,
+        published_at=record.published_at,
+        provider=record.search_run.provider,
+        site_name=record.site_name,
+    )
+
+
+def _refresh_search_run_counts(run: SearchRun) -> None:
+    candidates = SearchRunCandidate.objects.filter(search_run=run)
+    run.candidate_count = candidates.count()
+    run.merged_candidate_count = run.candidate_count
+    run.matched_count = candidates.filter(disposition=SearchCandidateDisposition.MATCHED).count()
+    run.repost_count = candidates.filter(content_relation=ContentRelation.REPOST).count()
+    run.owned_count = candidates.filter(content_relation=ContentRelation.OWNED).count()
+    run.review_required_count = candidates.filter(content_relation=ContentRelation.REVIEW_REQUIRED).count()
+    run.save(
+        update_fields=[
+            "candidate_count",
+            "merged_candidate_count",
+            "matched_count",
+            "repost_count",
+            "owned_count",
+            "review_required_count",
+        ]
+    )
+
+
+@transaction.atomic
+def review_search_candidate(
+    *,
+    candidate_id: int,
+    action: str,
+    reason: str,
+    owned_channel_id: int | None = None,
+) -> tuple[SearchRunCandidate, RepostRecord | None]:
+    """Apply a traceable human decision to one retained search candidate.
+
+    Only confirmed external reposts participate in the repost workspace/export.
+    Confirmed owned distribution stays in the reading-monitor boundary instead.
+    """
+
+    candidate = (
+        SearchRunCandidate.objects.select_for_update().select_related("search_run__article").get(pk=candidate_id)
+    )
+    article = candidate.search_run.article
+    reason_text = f"MANUAL_REVIEW: {reason.strip()}"[:500]
+    existing = (
+        RepostRecord.objects.select_for_update()
+        .filter(
+            article=article,
+            canonical_url_hash=candidate.canonical_url_hash,
+        )
+        .first()
+    )
+    record: RepostRecord | None = None
+
+    if action == "EXCLUDE":
+        if existing and existing.content_relation == ContentRelation.REPOST and existing.is_valid:
+            raise ValueError("已确认的外部转载不能通过候选复核排除，请使用专用作废流程。")
+        candidate.disposition = SearchCandidateDisposition.EXCLUDED_MANUAL
+        candidate.reason_code = "MANUAL_EXCLUDED"
+        candidate.content_relation = ""
+        candidate.owned_channel = None
+        candidate.classification_reason = reason_text
+        candidate.classified_at = timezone.now()
+        candidate.save(
+            update_fields=[
+                "disposition",
+                "reason_code",
+                "content_relation",
+                "owned_channel",
+                "classification_reason",
+                "classified_at",
+            ]
+        )
+        if existing:
+            existing.is_valid = False
+            existing.invalidation_reason = reason_text
+            existing.invalidated_at = timezone.now()
+            existing.save(update_fields=["is_valid", "invalidation_reason", "invalidated_at", "updated_at"])
+    else:
+        owned_channel: OwnedChannel | None = None
+        relation = ContentRelation.REPOST
+        if action == "CONFIRM_OWNED":
+            if not owned_channel_id:
+                raise ValueError("归入阅读量时必须选择自有渠道。")
+            owned_channel = OwnedChannel.objects.filter(pk=owned_channel_id, is_active=True).first()
+            if owned_channel is None:
+                raise ValueError("指定的自有渠道不存在或已停用。")
+            relation = ContentRelation.OWNED
+            if existing and existing.content_relation == ContentRelation.REPOST and existing.is_valid:
+                raise ValueError("已确认的外部转载不能被静默改为自有分发。")
+        elif action != "CONFIRM_REPOST":
+            raise ValueError("不支持的候选复核动作。")
+
+        source_candidate = _candidate_as_search_candidate(candidate)
+        match = compare_titles(article.title, source_candidate)
+        record, created = upsert_global_repost(
+            article=article,
+            candidate=source_candidate,
+            match=match,
+            found_at=timezone.now(),
+            content_relation=relation,
+            owned_channel=owned_channel,
+            classification_reason=reason_text,
+        )
+        record.content_relation = relation
+        record.owned_channel = owned_channel
+        record.classification_reason = reason_text
+        record.classified_at = timezone.now()
+        record.is_valid = True
+        record.save(
+            update_fields=[
+                "content_relation",
+                "owned_channel",
+                "classification_reason",
+                "classified_at",
+                "is_valid",
+                "updated_at",
+            ]
+        )
+        candidate.disposition = SearchCandidateDisposition.MATCHED
+        candidate.reason_code = f"MANUAL_{relation}"
+        candidate.content_relation = relation
+        candidate.owned_channel = owned_channel
+        candidate.classification_reason = reason_text
+        candidate.classified_at = timezone.now()
+        candidate.similarity_score = Decimal(str(round(match.similarity_score, 2)))
+        candidate.save(
+            update_fields=[
+                "disposition",
+                "reason_code",
+                "content_relation",
+                "owned_channel",
+                "classification_reason",
+                "classified_at",
+                "similarity_score",
+            ]
+        )
+        if relation == ContentRelation.REPOST and created:
+            candidate.search_run.new_repost_count += 1
+            candidate.search_run.save(update_fields=["new_repost_count"])
+
+    _refresh_search_run_counts(candidate.search_run)
+    return candidate, record
+
+
 def search_article(article: Article, *, provider: SearchProvider | None = None) -> SearchRun:
     provider_instance = provider
     provider_code = getattr(provider_instance, "code", settings.SEARCH_PROVIDER or "unconfigured")

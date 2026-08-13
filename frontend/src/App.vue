@@ -137,7 +137,7 @@ onMounted(refresh);
       </aside>
       <section class="content">
         <div class="toolbar"><el-button @click="refresh">刷新数据</el-button><span v-if="error" class="error">{{ error }}</span></div>
-        <MonitoringPanel v-if="page === 'monitoring'" />
+        <MonitoringPanel v-if="page === 'monitoring'" :can-operate="canOperate" />
         <ReadingPanel v-if="page === 'reading'" />
         <OperationsPanel v-if="page === 'manual-reposts' || page === 'operations'" :is-admin="isAdmin" :can-operate="canOperate" />
         <ReportsPanel v-if="page === 'reports'" :is-admin="isAdmin" />

@@ -25,7 +25,7 @@ from apps.platforms.models import Platform
 from apps.sources.models import SearchRunCandidate
 
 from .export_services import GlobalExportFilters, build_global_repost_workbook
-from .models import RepostRecord
+from .models import ContentRelation, RepostRecord
 from .query_services import (
     RepostQueryFilters,
     channel_options,
@@ -160,12 +160,10 @@ class ArticleDiscoveredPublicationView(APIView):
         reposts = article.repost_records.filter(
             is_valid=True, content_relation="REPOST", created_at__lte=as_of
         ).select_related("owned_channel", "platform")
-        owned = article.repost_records.filter(
-            is_valid=True, content_relation="OWNED", created_at__lte=as_of
-        ).select_related("owned_channel", "platform")
         runs = article.search_runs.order_by("-created_at", "-id")[:100]
         candidates = (
             SearchRunCandidate.objects.filter(search_run__article=article)
+            .exclude(content_relation=ContentRelation.OWNED)
             .select_related("search_run", "owned_channel")
             .order_by("-search_run__created_at", "-id")[:500]
         )
@@ -173,7 +171,6 @@ class ArticleDiscoveredPublicationView(APIView):
             {
                 "as_of": as_of,
                 "reposts": RepostRecordSerializer(reposts, many=True).data,
-                "owned": RepostRecordSerializer(owned, many=True).data,
                 "search_runs": [
                     {
                         "id": run.id,
@@ -183,7 +180,6 @@ class ArticleDiscoveredPublicationView(APIView):
                         "broad_candidate_count": run.broad_candidate_count,
                         "merged_candidate_count": run.merged_candidate_count,
                         "matched_count": run.matched_count,
-                        "owned_count": run.owned_count,
                         "repost_count": run.repost_count,
                         "review_required_count": run.review_required_count,
                         "new_repost_count": run.new_repost_count,

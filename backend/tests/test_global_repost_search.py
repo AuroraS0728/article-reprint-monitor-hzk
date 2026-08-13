@@ -15,6 +15,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 from apps.articles.models import Article, ArticleIngestMethod, ArticleMonitoringStatus
+from apps.audit.models import OperationLog
 from apps.reposts.export_services import (
     EXCEL_DATETIME_FORMAT,
     GlobalExportFilters,
@@ -281,6 +282,102 @@ def test_search_run_candidates_are_available_to_authenticated_readers(source: So
     assert candidate["title"] == "候选页"
     assert candidate["site_name"] == "示例财经"
     assert candidate["canonical_url"] == "https://finance.example.com/a"
+
+
+@pytest.mark.django_db
+def test_operator_can_review_candidate_as_external_repost_and_audit_is_recorded(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    run = search_article(
+        article,
+        provider=StaticProvider(
+            [
+                SearchCandidate(
+                    title="人工确认的候选标题",
+                    url="https://manual-review.example.com/a",
+                    site_name="人工复核站",
+                )
+            ]
+        ),
+    )
+    candidate = SearchRunCandidate.objects.get(search_run=run)
+    assert not RepostRecord.objects.filter(article=article).exists()
+
+    client = APIClient()
+    client.force_authenticate(operator)
+    response = client.post(
+        f"/api/v1/search-candidates/{candidate.id}/review",
+        {"action": "CONFIRM_REPOST", "reason": "人工确认是外部转载"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    candidate.refresh_from_db()
+    record = RepostRecord.objects.get(article=article, canonical_url_hash=candidate.canonical_url_hash)
+    assert candidate.content_relation == ContentRelation.REPOST
+    assert candidate.disposition == SearchCandidateDisposition.MATCHED
+    assert record.content_relation == ContentRelation.REPOST
+    assert run.__class__.objects.get(pk=run.id).repost_count == 1
+    assert OperationLog.objects.filter(action_type="SEARCH_CANDIDATE_REVIEWED", target_id=str(candidate.id)).exists()
+
+
+@pytest.mark.django_db
+def test_operator_can_send_candidate_to_reading_module_without_repost_export(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    channel = OwnedChannel.objects.create(
+        code="OWNED_REVIEW",
+        name="人工复核自有渠道",
+        channel_type="OFFICIAL_WEBSITE",
+        match_rules={"domains": ["owned-review.example.com"]},
+    )
+    run = search_article(
+        article,
+        provider=StaticProvider(
+            [SearchCandidate(title="待人工归类", url="https://owned-review.example.com/a", site_name="自有渠道")]
+        ),
+    )
+    candidate = SearchRunCandidate.objects.get(search_run=run)
+    client = APIClient()
+    client.force_authenticate(operator)
+
+    response = client.post(
+        f"/api/v1/search-candidates/{candidate.id}/review",
+        {"action": "CONFIRM_OWNED", "reason": "属于自有分发", "owned_channel_id": channel.id},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    candidate.refresh_from_db()
+    record = RepostRecord.objects.get(article=article, canonical_url_hash=candidate.canonical_url_hash)
+    assert candidate.content_relation == ContentRelation.OWNED
+    assert candidate.owned_channel_id == channel.id
+    assert record.content_relation == ContentRelation.OWNED
+    assert record.owned_channel_id == channel.id
+    as_of = timezone.now()
+    assert (
+        result_summary(filtered_repost_articles(RepostQueryFilters(), as_of=as_of), as_of=as_of)["repost_url_count"]
+        == 0
+    )
+    reading = client.get("/api/v1/reading-monitor/owned-publications")
+    assert reading.status_code == 200
+    assert reading.json()["data"]["publications"][0]["url"] == "https://owned-review.example.com/a"
+
+
+@pytest.mark.django_db
+def test_candidate_review_requires_operator_or_administrator(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    run = search_article(
+        article,
+        provider=StaticProvider([SearchCandidate(title="复核权限", url="https://review-auth.example.com/a")]),
+    )
+    viewer = User.objects.create_user(username="candidate-viewer", password="A-valid-password-123", role="VIEWER")
+    client = APIClient()
+    client.force_authenticate(viewer)
+    response = client.post(
+        f"/api/v1/search-candidates/{SearchRunCandidate.objects.get(search_run=run).id}/review",
+        {"action": "EXCLUDE", "reason": "只读用户不可复核"},
+        format="json",
+    )
+    assert response.status_code == 403
 
 
 @pytest.mark.django_db

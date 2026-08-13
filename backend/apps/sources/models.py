@@ -172,6 +172,7 @@ class SearchCandidateDisposition(models.TextChoices):
     EXCLUDED_SOURCE = "EXCLUDED_SOURCE", "原创来源链接"
     EXCLUDED_ORIGINAL = "EXCLUDED_ORIGINAL", "原创文章链接"
     EXCLUDED_TOO_EARLY = "EXCLUDED_TOO_EARLY", "发布时间早于原创"
+    EXCLUDED_MANUAL = "EXCLUDED_MANUAL", "人工排除"
     NOT_MATCHED = "NOT_MATCHED", "未匹配"
     MATCHED = "MATCHED", "已匹配转载"
 

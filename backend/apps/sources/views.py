@@ -30,6 +30,7 @@ from .serializers import (
     ArticleIngestConflictReviewSerializer,
     ArticleIngestConflictSerializer,
     ManualGlobalSearchSerializer,
+    SearchRunCandidateReviewSerializer,
     SearchRunCandidateSerializer,
     SourceArticleIngestSerializer,
 )
@@ -37,6 +38,7 @@ from .services import (
     approve_source_ingest_conflict,
     ingest_source_article,
     link_source_ingest_conflict,
+    review_search_candidate,
 )
 from .tasks import search_article_reposts
 
@@ -277,6 +279,49 @@ class SearchRunCandidateListView(APIView):
         get_object_or_404(SearchRun, pk=pk)
         candidates = SearchRunCandidate.objects.filter(search_run_id=pk)
         return ok(SearchRunCandidateSerializer(candidates, many=True).data)
+
+
+class SearchRunCandidateReviewView(APIView):
+    permission_classes = [CanOperate]
+    serializer_class = SearchRunCandidateReviewSerializer
+
+    def post(self, request: Request, pk: int) -> Response:
+        serializer = SearchRunCandidateReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        candidate = get_object_or_404(SearchRunCandidate.objects.select_related("search_run__article"), pk=pk)
+        before_data = {
+            "disposition": candidate.disposition,
+            "content_relation": candidate.content_relation,
+            "owned_channel_id": candidate.owned_channel_id,
+            "classification_reason": candidate.classification_reason,
+        }
+        try:
+            reviewed, record = review_search_candidate(
+                candidate_id=candidate.id,
+                action=cast(str, serializer.validated_data["action"]),
+                reason=cast(str, serializer.validated_data["reason"]),
+                owned_channel_id=cast(int | None, serializer.validated_data.get("owned_channel_id")),
+            )
+        except (SearchRunCandidate.DoesNotExist, ValueError) as error:
+            return Response(
+                {"success": False, "error": {"code": "CANDIDATE_REVIEW_FAILED", "message": str(error)}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        record_audit(
+            request,
+            action_type="SEARCH_CANDIDATE_REVIEWED",
+            target_type="SearchRunCandidate",
+            target_id=reviewed.id,
+            before_data=before_data,
+            after_data={
+                "action": serializer.validated_data["action"],
+                "reason": serializer.validated_data["reason"],
+                "content_relation": reviewed.content_relation,
+                "owned_channel_id": reviewed.owned_channel_id,
+                "repost_record_id": record.id if record else None,
+            },
+        )
+        return ok(SearchRunCandidateSerializer(reviewed).data)
 
 
 class ArticleIngestConflictReviewView(APIView):

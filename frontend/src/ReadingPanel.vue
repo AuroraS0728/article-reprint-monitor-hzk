@@ -32,7 +32,7 @@ onMounted(load);
     <el-skeleton v-else-if="loading" :rows="6" animated />
     <template v-else>
       <h2>自有渠道</h2>
-      <el-table :data="channels"><el-table-column prop="name" label="渠道" /><el-table-column prop="channel_type" label="类型" /><el-table-column prop="notes" label="匹配说明" min-width="320" /></el-table>
+      <el-table :data="channels"><el-table-column prop="id" label="渠道 ID" width="100" /><el-table-column prop="name" label="渠道" /><el-table-column prop="channel_type" label="类型" /><el-table-column prop="notes" label="匹配说明" min-width="320" /></el-table>
       <h2>已识别的自有分发文章</h2>
       <el-empty v-if="!publications.length" description="暂无已确认的自有分发文章" />
       <el-table v-else :data="publications"><el-table-column prop="article_title" label="原创文章" min-width="260" /><el-table-column prop="channel_name" label="自有渠道" /><el-table-column label="链接" min-width="260"><template #default="scope"><a :href="scope.row.url" target="_blank" rel="noopener noreferrer">{{ scope.row.url }}</a></template></el-table-column><el-table-column prop="published_at" label="发现发布时间" min-width="170" /><el-table-column label="阅读量" width="120"><template #default="scope">{{ scope.row.reading_count ?? '—' }}</template></el-table-column><el-table-column prop="reading_status" label="状态" width="140" /></el-table>
