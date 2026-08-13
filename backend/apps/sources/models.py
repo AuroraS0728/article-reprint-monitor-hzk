@@ -140,7 +140,7 @@ class SearchCandidateDisposition(models.TextChoices):
 
 
 class SearchRunCandidate(models.Model):
-    """A sanitized, inspectable candidate returned by one completed provider run."""
+    """A sanitized, inspectable candidate retained until its source article expires."""
 
     search_run = models.ForeignKey(SearchRun, related_name="candidates", on_delete=models.CASCADE)
     title = models.CharField(max_length=500)

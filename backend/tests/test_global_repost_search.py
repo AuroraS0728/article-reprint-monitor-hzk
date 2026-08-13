@@ -22,7 +22,7 @@ from apps.reposts.export_services import (
     sanitize_excel_sheet_name,
 )
 from apps.reposts.models import RepostRecord
-from apps.sources.models import SearchCandidateDisposition, SearchRunCandidate, SearchRunStatus, Source
+from apps.sources.models import SearchCandidateDisposition, SearchRun, SearchRunCandidate, SearchRunStatus, Source
 from apps.sources.services import (
     _next_search_time,
     canonicalize_http_url,
@@ -52,6 +52,27 @@ class ErrorProvider:
 
     def search(self, query: str, **kwargs: object) -> list[SearchCandidate]:
         raise SearchProviderRateLimited("rate limited")
+
+
+class InspectingProvider:
+    """Confirms that the first provider response is saved before the next query."""
+
+    code = "inspecting-provider"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def search(self, query: str, **kwargs: object) -> list[SearchCandidate]:
+        self.calls += 1
+        if self.calls == 1:
+            return [SearchCandidate(title="第一批候选", url="https://example.com/first", site_name="示例站")]
+
+        run = SearchRun.objects.latest("id")
+        candidate = SearchRunCandidate.objects.get(search_run=run)
+        assert run.status == SearchRunStatus.RUNNING
+        assert run.candidate_count == 1
+        assert candidate.disposition == SearchCandidateDisposition.PENDING
+        return [SearchCandidate(title="第二批候选", url="https://example.com/second", site_name="示例站")]
 
 
 @pytest.fixture
@@ -202,6 +223,16 @@ def test_search_run_candidates_are_available_to_authenticated_readers(source: So
     assert candidate["title"] == "候选页"
     assert candidate["site_name"] == "示例财经"
     assert candidate["canonical_url"] == "https://finance.example.com/a"
+
+
+@pytest.mark.django_db
+def test_search_candidates_are_persisted_while_run_is_still_running(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    run = search_article(article, provider=InspectingProvider())
+
+    assert run.status == SearchRunStatus.SUCCESS
+    assert run.candidate_count == 2
+    assert SearchRunCandidate.objects.filter(search_run=run).count() == 2
 
 
 def test_url_canonicalization_and_similarity_threshold() -> None:

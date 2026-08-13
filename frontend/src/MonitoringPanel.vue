@@ -38,9 +38,10 @@ type GlobalSearchCandidate = {
   raw_url: string;
   canonical_url: string;
   published_at: string | null;
-  disposition: "EXCLUDED_SOURCE" | "EXCLUDED_ORIGINAL" | "EXCLUDED_TOO_EARLY" | "NOT_MATCHED" | "MATCHED";
+  disposition: "PENDING" | "EXCLUDED_SOURCE" | "EXCLUDED_ORIGINAL" | "EXCLUDED_TOO_EARLY" | "NOT_MATCHED" | "MATCHED";
   similarity_score: string | null;
   reason_code: string;
+  created_at: string;
 };
 
 const articles = ref<Article[]>([]);
@@ -71,8 +72,8 @@ let refreshTimer: number | undefined;
 const activeArticles = computed(() => articles.value.filter((article) => article.status === "ACTIVE"));
 const manualSearchArticles = computed(() => articles.value.filter((article) => article.status === "ACTIVE"));
 
-async function load(): Promise<void> {
-  loading.value = true;
+async function load(showLoading = true): Promise<void> {
+  if (showLoading) loading.value = true;
   error.value = "";
   try {
     const [articleData, platformData, batchData, matrixData, defaults, runData] = await Promise.all([
@@ -92,7 +93,7 @@ async function load(): Promise<void> {
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "加载监测数据失败";
   } finally {
-    loading.value = false;
+    if (showLoading) loading.value = false;
   }
 }
 
@@ -106,6 +107,7 @@ function runStatusLabel(status: GlobalSearchRun["status"]): string {
 
 function candidateStatusLabel(disposition: GlobalSearchCandidate["disposition"]): string {
   return {
+    PENDING: "待判定",
     EXCLUDED_SOURCE: "原创来源链接",
     EXCLUDED_ORIGINAL: "原创文章链接",
     EXCLUDED_TOO_EARLY: "发布时间早于原创",
@@ -114,18 +116,22 @@ function candidateStatusLabel(disposition: GlobalSearchCandidate["disposition"])
   }[disposition];
 }
 
-async function showCandidates(run: GlobalSearchRun): Promise<void> {
-  selectedRun.value = run;
-  candidateDialogOpen.value = true;
+async function loadCandidates(runId: number): Promise<void> {
   candidateLoading.value = true;
-  runCandidates.value = [];
   try {
-    runCandidates.value = await api<GlobalSearchCandidate[]>(`/global-search-runs/${run.id}/candidates`);
+    runCandidates.value = await api<GlobalSearchCandidate[]>(`/global-search-runs/${runId}/candidates`);
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "候选页面加载失败";
   } finally {
     candidateLoading.value = false;
   }
+}
+
+async function showCandidates(run: GlobalSearchRun): Promise<void> {
+  selectedRun.value = run;
+  candidateDialogOpen.value = true;
+  runCandidates.value = [];
+  await loadCandidates(run.id);
 }
 
 async function queueGlobalSearch(): Promise<void> {
@@ -213,9 +219,18 @@ async function exportExcel(): Promise<void> {
   }
 }
 
+async function refreshSavedSearchData(): Promise<void> {
+  await load(false);
+  if (candidateDialogOpen.value && selectedRun.value) {
+    await loadCandidates(selectedRun.value.id);
+  }
+}
+
 onMounted(async () => {
   await load();
-  refreshTimer = window.setInterval(() => void load(), 5 * 60 * 1000);
+  // This reads only persisted API data. Short polling makes a RUNNING search
+  // observable; it does not fabricate results or trigger another search.
+  refreshTimer = window.setInterval(() => void refreshSavedSearchData(), 5 * 1000);
 });
 onBeforeUnmount(() => {
   if (refreshTimer !== undefined) window.clearInterval(refreshTimer);
@@ -254,7 +269,7 @@ onBeforeUnmount(() => {
         </el-table>
         <el-empty v-else description="尚无全网搜索运行记录。" />
         <el-dialog v-model="candidateDialogOpen" :title="`搜索候选：${selectedRun ? articleName(selectedRun.article_id) : ''}`" width="90%">
-          <p>候选页只是搜索服务返回并参与比对的网页，不等同于确认转载。只有“已匹配转载”会进入正式转载记录。</p>
+          <p>候选链接会在搜索服务返回后立即保存，并在本次搜索执行期间自动刷新。候选是正式保留的“搜索发现记录”，但不等同于确认转载；只有通过标题与时间规则核验的“已匹配转载”才会进入转载统计和报表。</p>
           <el-skeleton v-if="candidateLoading" :rows="5" animated />
           <el-empty v-else-if="!runCandidates.length" description="该旧搜索记录未保存候选明细；请重新执行一次全网检测。" />
           <el-table v-else :data="runCandidates">
@@ -262,6 +277,7 @@ onBeforeUnmount(() => {
             <el-table-column prop="title" label="页面标题" min-width="240" />
             <el-table-column label="链接" min-width="280"><template #default="scope"><a :href="scope.row.canonical_url || scope.row.raw_url" target="_blank" rel="noopener noreferrer">{{ scope.row.canonical_url || scope.row.raw_url }}</a></template></el-table-column>
             <el-table-column prop="published_at" label="发布时间" width="180"><template #default="scope">{{ scope.row.published_at || "无" }}</template></el-table-column>
+            <el-table-column prop="created_at" label="发现时间" width="180" />
             <el-table-column label="判定" width="150"><template #default="scope">{{ candidateStatusLabel(scope.row.disposition) }}</template></el-table-column>
             <el-table-column prop="similarity_score" label="标题分" width="100"><template #default="scope">{{ scope.row.similarity_score ?? "—" }}</template></el-table-column>
           </el-table>

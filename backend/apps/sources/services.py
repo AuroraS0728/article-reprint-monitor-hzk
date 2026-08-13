@@ -634,6 +634,36 @@ def upsert_global_repost(
     return record, False
 
 
+def _persist_search_candidate(*, run: SearchRun, canonical_url: str, candidate: SearchCandidate) -> SearchRunCandidate:
+    """Persist a provider result immediately, before final matching is complete."""
+    record, _ = SearchRunCandidate.objects.update_or_create(
+        search_run=run,
+        canonical_url_hash=sha256(canonical_url.encode("utf-8")).hexdigest(),
+        defaults={
+            "title": candidate.title[:500],
+            "site_name": candidate.site_name[:255],
+            "site_domain": candidate.domain[:253],
+            "raw_url": candidate.url,
+            "canonical_url": canonical_url,
+            "published_at": candidate.published_at,
+        },
+    )
+    return record
+
+
+def _classify_search_candidate(
+    record: SearchRunCandidate,
+    *,
+    disposition: SearchCandidateDisposition,
+    reason_code: str,
+    similarity_score: Decimal | float | None = None,
+) -> None:
+    record.disposition = disposition
+    record.reason_code = reason_code
+    record.similarity_score = similarity_score
+    record.save(update_fields=["disposition", "reason_code", "similarity_score"])
+
+
 def search_article(article: Article, *, provider: SearchProvider | None = None) -> SearchRun:
     provider_instance = provider
     provider_code = getattr(provider_instance, "code", settings.SEARCH_PROVIDER or "unconfigured")
@@ -662,70 +692,55 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
                     canonical = canonicalize_http_url(candidate.url)
                 except ValueError:
                     continue
-                all_candidates.setdefault(canonical, candidate)
+                if canonical in all_candidates:
+                    continue
+                all_candidates[canonical] = candidate
+                _persist_search_candidate(run=run, canonical_url=canonical, candidate=candidate)
+
+            # A search provider normally returns one page at a time.  Persisting the
+            # page before issuing the next query makes links inspectable while this
+            # run is still RUNNING instead of only after the final classification.
+            run.candidate_count = len(all_candidates)
+            run.save(update_fields=["candidate_count"])
+
         matched_count = 0
         new_count = 0
         for canonical, candidate in all_candidates.items():
+            candidate_record = SearchRunCandidate.objects.get(
+                search_run=run,
+                canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
+            )
             belongs_to_source = bool(article.source is not None and is_url_for_source(article.source, canonical))
             if belongs_to_source:
-                SearchRunCandidate.objects.create(
-                    search_run=run,
-                    title=candidate.title[:500],
-                    site_name=candidate.site_name[:255],
-                    site_domain=candidate.domain[:253],
-                    raw_url=candidate.url,
-                    canonical_url=canonical,
-                    canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
-                    published_at=candidate.published_at,
+                _classify_search_candidate(
+                    candidate_record,
                     disposition=SearchCandidateDisposition.EXCLUDED_SOURCE,
                     reason_code="SOURCE_DOMAIN",
                 )
                 continue
             if canonical == article.original_url:
-                SearchRunCandidate.objects.create(
-                    search_run=run,
-                    title=candidate.title[:500],
-                    site_name=candidate.site_name[:255],
-                    site_domain=candidate.domain[:253],
-                    raw_url=candidate.url,
-                    canonical_url=canonical,
-                    canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
-                    published_at=candidate.published_at,
+                _classify_search_candidate(
+                    candidate_record,
                     disposition=SearchCandidateDisposition.EXCLUDED_ORIGINAL,
                     reason_code="ORIGINAL_URL",
                 )
                 continue
             if _candidate_is_too_early(article, candidate):
-                SearchRunCandidate.objects.create(
-                    search_run=run,
-                    title=candidate.title[:500],
-                    site_name=candidate.site_name[:255],
-                    site_domain=candidate.domain[:253],
-                    raw_url=candidate.url,
-                    canonical_url=canonical,
-                    canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
-                    published_at=candidate.published_at,
+                _classify_search_candidate(
+                    candidate_record,
                     disposition=SearchCandidateDisposition.EXCLUDED_TOO_EARLY,
                     reason_code="PUBLISHED_TOO_EARLY",
                 )
                 continue
             match = compare_titles(article.title, candidate)
-            candidate_record = SearchRunCandidate(
-                search_run=run,
-                title=candidate.title[:500],
-                site_name=candidate.site_name[:255],
-                site_domain=candidate.domain[:253],
-                raw_url=candidate.url,
-                canonical_url=canonical,
-                canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
-                published_at=candidate.published_at,
+            _classify_search_candidate(
+                candidate_record,
                 disposition=(
                     SearchCandidateDisposition.MATCHED if match.matched else SearchCandidateDisposition.NOT_MATCHED
                 ),
                 similarity_score=match.similarity_score,
                 reason_code="TITLE_MATCH" if match.matched else "TITLE_NOT_MATCHED",
             )
-            candidate_record.save()
             if not match.matched:
                 continue
             matched_count += 1
@@ -800,6 +815,9 @@ def purge_expired_source_articles() -> dict[str, int]:
             continue
         with transaction.atomic():
             RepostRecord.objects.filter(article_id=article_id).delete()
+            # Candidate links belong to their search run and are retained with the
+            # article for its full one-year retention period. The cascade only runs
+            # when the article itself is eligible for permanent deletion.
             SearchRun.objects.filter(article_id=article_id).delete()
             Article.objects.filter(id=article_id, retention_until__lt=now).delete()
             details["articles_deleted"] += 1

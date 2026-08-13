@@ -48,6 +48,7 @@ class SearchRunCandidateSerializer(serializers.ModelSerializer[SearchRunCandidat
             "disposition",
             "similarity_score",
             "reason_code",
+            "created_at",
         ]
         read_only_fields = fields
 
