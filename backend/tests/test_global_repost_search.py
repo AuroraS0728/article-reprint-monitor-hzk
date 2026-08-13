@@ -515,6 +515,7 @@ def test_enabled_search_providers_run_in_priority_order_and_fall_back_after_fail
     article = create_source_article(source=source, operator=operator)
     first = SearchProviderConfiguration.objects.create(code="tencent_wsa", name="First", enabled=True, priority=10)
     second = SearchProviderConfiguration.objects.create(code="brave", name="Second", enabled=True, priority=20)
+    SearchProviderConfiguration.objects.filter(code="bing_html").update(enabled=False)
     fallback = NamedStaticProvider(
         "brave",
         [SearchCandidate(title=article.title, url="https://fallback.example.com/repost", site_name="Fallback")],
@@ -542,6 +543,7 @@ def test_candidate_keeps_all_provider_codes_when_the_same_url_is_returned(source
     article = create_source_article(source=source, operator=operator)
     first = SearchProviderConfiguration.objects.create(code="tencent_wsa", name="First", enabled=True, priority=10)
     second = SearchProviderConfiguration.objects.create(code="brave", name="Second", enabled=True, priority=20)
+    SearchProviderConfiguration.objects.filter(code="bing_html").update(enabled=False)
     shared_url = "https://same.example.com/repost"
     with patch(
         "apps.sources.services.search_provider_for_code",
@@ -757,6 +759,7 @@ def test_provider_error_keeps_article_active_and_existing_reposts(source: Source
 @override_settings(SEARCH_PROVIDER="", BRAVE_SEARCH_API_KEY="")
 def test_unconfigured_provider_records_explicit_error_without_fake_results(source: Source, operator: User) -> None:
     article = create_source_article(source=source, operator=operator)
+    SearchProviderConfiguration.objects.update(enabled=False)
     run = search_article(article)
     assert run.status == SearchRunStatus.ERROR
     assert run.error_code == "SEARCH_PROVIDER_NOT_CONFIGURED"

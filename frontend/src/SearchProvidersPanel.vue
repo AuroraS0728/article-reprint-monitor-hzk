@@ -17,7 +17,9 @@ const form = ref({ code: "tencent_wsa", name: "腾讯云联网搜索", enabled: 
 const selectedCode = computed(() => form.value.code);
 
 function suggestedName(code: string): void {
-  form.value.name = code === "brave" ? "Brave Search API" : "腾讯云联网搜索";
+  if (code === "brave") form.value.name = "Brave Search API";
+  else if (code === "bing_html") form.value.name = "Bing 公开结果页";
+  else form.value.name = "腾讯云联网搜索";
 }
 
 async function load(): Promise<void> {
@@ -56,9 +58,9 @@ onMounted(load);
   <section class="search-providers">
     <div class="heading"><div><h1>搜索来源</h1><p>每轮按优先级查询全部已启用的正式 API 来源；密钥只保存在服务器安全文件中。</p></div><el-button @click="load">刷新</el-button></div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
-    <el-alert type="info" :closable="false" title="未配置服务器密钥的来源不能启用；没有浏览器页面抓取、验证码绕过或虚构来源。" />
+    <el-alert type="info" :closable="false" title="Bing 公开结果页只读取公开搜索结果，不使用 Cookie 或账户；出现登录、验证码或页面结构异常时会失败并切换后续来源。需要密钥的来源未配置服务器密钥时不能启用。" />
     <el-form class="editor" label-position="top" @submit.prevent="save">
-      <el-form-item label="来源"><el-select v-model="form.code" @change="suggestedName"><el-option label="腾讯云联网搜索" value="tencent_wsa" /><el-option label="Brave Search API" value="brave" /></el-select></el-form-item>
+      <el-form-item label="来源"><el-select v-model="form.code" @change="suggestedName"><el-option label="腾讯云联网搜索" value="tencent_wsa" /><el-option label="Bing 公开结果页" value="bing_html" /><el-option label="Brave Search API" value="brave" /></el-select></el-form-item>
       <el-form-item label="显示名称"><el-input v-model="form.name" /></el-form-item>
       <el-form-item label="优先级（越小越先）"><el-input-number v-model="form.priority" :min="1" :max="999" /></el-form-item>
       <el-form-item label="启用"><el-switch v-model="form.enabled" /></el-form-item>

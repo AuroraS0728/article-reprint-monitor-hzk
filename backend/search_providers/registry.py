@@ -4,14 +4,15 @@ from django.conf import settings
 
 from .base import SearchProvider
 from .exceptions import SearchProviderNotConfigured
+from .providers.bing_html import BingHtmlSearchProvider
 from .providers.brave import BraveSearchProvider
 from .providers.tencent_wsa import TencentWsaSearchProvider
 
-SUPPORTED_PROVIDER_CODES = ("tencent_wsa", "brave")
+SUPPORTED_PROVIDER_CODES = ("tencent_wsa", "bing_html", "brave")
 
 
 def search_provider_for_code(provider_code: str) -> SearchProvider:
-    """Return only a provider with a real, configured official API credential."""
+    """Return a verified configured API or public-page search provider."""
 
     provider = provider_code.strip().lower()
     if provider == "brave":
@@ -22,6 +23,8 @@ def search_provider_for_code(provider_code: str) -> SearchProvider:
         if not settings.TENCENTCLOUD_WSA_APIKEY:
             raise SearchProviderNotConfigured("Tencent Cloud WSA API key is not configured.")
         return TencentWsaSearchProvider()
+    if provider == "bing_html":
+        return BingHtmlSearchProvider()
     raise SearchProviderNotConfigured(f"不支持的 SEARCH_PROVIDER：{provider}")
 
 
