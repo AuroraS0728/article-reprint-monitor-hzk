@@ -22,6 +22,7 @@ from .serializers import (
     ArticleIngestConflictReviewSerializer,
     ArticleIngestConflictSerializer,
     ManualGlobalSearchSerializer,
+    SearchRunCandidateSerializer,
     SourceArticleIngestSerializer,
 )
 from .services import approve_source_ingest_conflict, ingest_source_article, link_source_ingest_conflict
@@ -187,27 +188,12 @@ class ManualGlobalSearchView(APIView):
 
 class SearchRunCandidateListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = SearchRunCandidateSerializer
 
     def get(self, request: Request, pk: int) -> Response:
         get_object_or_404(SearchRun, pk=pk)
         candidates = SearchRunCandidate.objects.filter(search_run_id=pk)
-        return ok(
-            [
-                {
-                    "id": candidate.id,
-                    "title": candidate.title,
-                    "site_name": candidate.site_name,
-                    "site_domain": candidate.site_domain,
-                    "raw_url": candidate.raw_url,
-                    "canonical_url": candidate.canonical_url,
-                    "published_at": candidate.published_at,
-                    "disposition": candidate.disposition,
-                    "similarity_score": candidate.similarity_score,
-                    "reason_code": candidate.reason_code,
-                }
-                for candidate in candidates
-            ]
-        )
+        return ok(SearchRunCandidateSerializer(candidates, many=True).data)
 
 
 class ArticleIngestConflictReviewView(APIView):

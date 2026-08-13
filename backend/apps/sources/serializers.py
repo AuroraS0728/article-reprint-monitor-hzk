@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import ArticleIngestConflict, ArticleIngestConflictStatus
+from .models import ArticleIngestConflict, ArticleIngestConflictStatus, SearchRunCandidate
 
 
 class SourceArticleIngestSerializer(serializers.Serializer[object]):
@@ -32,6 +32,24 @@ class ManualGlobalSearchSerializer(serializers.Serializer[object]):
 
     def validate_article_ids(self, value: list[int]) -> list[int]:
         return list(dict.fromkeys(value))
+
+
+class SearchRunCandidateSerializer(serializers.ModelSerializer[SearchRunCandidate]):
+    class Meta:
+        model = SearchRunCandidate
+        fields = [
+            "id",
+            "title",
+            "site_name",
+            "site_domain",
+            "raw_url",
+            "canonical_url",
+            "published_at",
+            "disposition",
+            "similarity_score",
+            "reason_code",
+        ]
+        read_only_fields = fields
 
 
 class ArticleIngestConflictSerializer(serializers.ModelSerializer[ArticleIngestConflict]):
