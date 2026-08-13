@@ -29,7 +29,11 @@ from apps.operations.views import (
     SystemRuntimeConfigurationView,
     TaskFailureLogListView,
 )
-from apps.platforms.views import PlatformActionView, PlatformDetailView, PlatformListCreateView
+from apps.platforms.views import (
+    PlatformActionView,
+    PlatformDetailView,
+    PlatformListCreateView,
+)
 from apps.reports.views import (
     EmailDeliveryListView,
     EmailDeliveryResendView,
@@ -40,10 +44,12 @@ from apps.reports.views import (
     TestEmailView,
 )
 from apps.reposts.views import (
+    ArticleDiscoveredPublicationView,
     GlobalRepostExportView,
     ManualRepostCreateView,
     ManualRepostValidityView,
     RepostRecordListView,
+    RepostResultWorkspaceView,
 )
 from apps.sources.views import (
     ArticleIngestConflictListView,
@@ -52,8 +58,17 @@ from apps.sources.views import (
     SearchRunCandidateListView,
     SourceArticleIngestView,
 )
+from apps.sources.views_owned import OwnedChannelReadingView
 
-from .views import ChangePasswordView, HealthView, LoginView, LogoutView, MeView, UserDetailView, UserListCreateView
+from .views import (
+    ChangePasswordView,
+    HealthView,
+    LoginView,
+    LogoutView,
+    MeView,
+    UserDetailView,
+    UserListCreateView,
+)
 
 urlpatterns = [
     path("health/", HealthView.as_view()),
@@ -66,9 +81,13 @@ urlpatterns = [
     path("articles", ArticleListCreateView.as_view()),
     path("source-ingest/articles", SourceArticleIngestView.as_view()),
     path("source-ingest-conflicts", ArticleIngestConflictListView.as_view()),
-    path("source-ingest-conflicts/<int:pk>/review", ArticleIngestConflictReviewView.as_view()),
+    path(
+        "source-ingest-conflicts/<int:pk>/review",
+        ArticleIngestConflictReviewView.as_view(),
+    ),
     path("global-search-runs", ManualGlobalSearchView.as_view()),
     path("global-search-runs/<int:pk>/candidates", SearchRunCandidateListView.as_view()),
+    path("reading-monitor/owned-publications", OwnedChannelReadingView.as_view()),
     path("articles/<int:pk>", ArticleDetailView.as_view()),
     path("articles/<int:pk>/reposts", ArticleRepostsView.as_view()),
     path("articles/bulk-paste", ArticleBulkPasteView.as_view()),
@@ -92,6 +111,11 @@ urlpatterns = [
     path("detection-batches/<int:pk>/statistics", DetectionStatisticsView.as_view()),
     path("detection-results/<int:pk>/reposts", DetectionResultRepostsView.as_view()),
     path("repost-records", RepostRecordListView.as_view()),
+    path("repost-monitor/results", RepostResultWorkspaceView.as_view()),
+    path(
+        "articles/<int:pk>/discovered-publications",
+        ArticleDiscoveredPublicationView.as_view(),
+    ),
     path("repost-monitor/export.xlsx", GlobalRepostExportView.as_view()),
     path("manual-reposts", ManualRepostCreateView.as_view()),
     path("manual-reposts/<int:pk>/<str:action>", ManualRepostValidityView.as_view()),

@@ -35,7 +35,11 @@ class ArticleIngestMethod(models.TextChoices):
 
 class Article(models.Model):
     source = models.ForeignKey(
-        "sources.Source", related_name="articles", null=True, blank=True, on_delete=models.PROTECT
+        "sources.Source",
+        related_name="articles",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
     )
     source_item_key = models.CharField(max_length=128, null=True, blank=True)
     title = models.CharField(max_length=500)
@@ -43,11 +47,20 @@ class Article(models.Model):
     published_date = models.DateField(db_index=True)
     author = models.CharField(max_length=255, blank=True, default="")
     published_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    channel_code = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    channel_name = models.CharField(max_length=100, blank=True, default="")
+    section_code = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    section_name = models.CharField(max_length=100, blank=True, default="")
     original_url = models.URLField(max_length=2048, blank=True)
     source_platform = models.CharField(max_length=100, blank=True)
     author_department = models.CharField(max_length=100, blank=True)
     notes = models.CharField(max_length=500, blank=True)
-    status = models.CharField(max_length=16, choices=ArticleStatus.choices, default=ArticleStatus.ACTIVE, db_index=True)
+    status = models.CharField(
+        max_length=16,
+        choices=ArticleStatus.choices,
+        default=ArticleStatus.ACTIVE,
+        db_index=True,
+    )
     discovered_at = models.DateTimeField(null=True, blank=True)
     monitor_started_at = models.DateTimeField(null=True, blank=True)
     monitor_until = models.DateTimeField(null=True, blank=True, db_index=True)

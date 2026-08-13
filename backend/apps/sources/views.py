@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import cast
 
+from django.db.models import Exists, OuterRef
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
@@ -15,9 +16,16 @@ from apps.articles.models import Article, ArticleStatus
 from apps.audit.services import record_audit
 from apps.core.permissions import CanOperate, IsAdministrator
 from apps.core.views import ok
+from apps.reposts.models import ContentRelation, RepostRecord
 
 from .authentication import SourceTokenAuthentication
-from .models import ArticleIngestConflict, ArticleIngestConflictStatus, SearchRun, SearchRunCandidate, SourceIngestToken
+from .models import (
+    ArticleIngestConflict,
+    ArticleIngestConflictStatus,
+    SearchRun,
+    SearchRunCandidate,
+    SourceIngestToken,
+)
 from .serializers import (
     ArticleIngestConflictReviewSerializer,
     ArticleIngestConflictSerializer,
@@ -25,7 +33,11 @@ from .serializers import (
     SearchRunCandidateSerializer,
     SourceArticleIngestSerializer,
 )
-from .services import approve_source_ingest_conflict, ingest_source_article, link_source_ingest_conflict
+from .services import (
+    approve_source_ingest_conflict,
+    ingest_source_article,
+    link_source_ingest_conflict,
+)
 from .tasks import search_article_reposts
 
 
@@ -48,10 +60,17 @@ class SourceArticleIngestView(APIView):
                 published_at=cast(datetime, data["published_at"]),
                 original_url=cast(str, data["original_url"]),
                 created_by=cast(User, request.user),
+                channel_code=cast(str, data.get("channel_code", "")),
+                channel_name=cast(str, data.get("channel_name", "")),
+                section_code=cast(str, data.get("section_code", "")),
+                section_name=cast(str, data.get("section_name", "")),
             )
         except ValueError as error:
             return Response(
-                {"success": False, "error": {"code": "INVALID_SOURCE_ARTICLE", "message": str(error)}},
+                {
+                    "success": False,
+                    "error": {"code": "INVALID_SOURCE_ARTICLE", "message": str(error)},
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if result.pending_review:
@@ -86,7 +105,7 @@ class SourceArticleIngestView(APIView):
             raise RuntimeError("Source Ingest 结果缺少 Article。")
         record_audit(
             request,
-            action_type="SOURCE_ARTICLE_CREATE" if result.created else "SOURCE_ARTICLE_UPDATE",
+            action_type=("SOURCE_ARTICLE_CREATE" if result.created else "SOURCE_ARTICLE_UPDATE"),
             target_type="Article",
             target_id=article.id,
             after_data={
@@ -116,7 +135,12 @@ class ArticleIngestConflictListView(APIView):
 
     def get(self, request: Request) -> Response:
         conflicts = ArticleIngestConflict.objects.select_related(
-            "source", "existing_article", "created_article", "linked_article", "created_by", "reviewed_by"
+            "source",
+            "existing_article",
+            "created_article",
+            "linked_article",
+            "created_by",
+            "reviewed_by",
         )
         if status_filter := request.query_params.get("status"):
             conflicts = conflicts.filter(status=status_filter)
@@ -142,7 +166,13 @@ class ManualGlobalSearchView(APIView):
                     "status": run.status,
                     "provider": run.provider,
                     "candidate_count": run.candidate_count,
+                    "exact_candidate_count": run.exact_candidate_count,
+                    "broad_candidate_count": run.broad_candidate_count,
+                    "merged_candidate_count": run.merged_candidate_count,
                     "matched_count": run.matched_count,
+                    "owned_count": run.owned_count,
+                    "repost_count": run.repost_count,
+                    "review_required_count": run.review_required_count,
                     "new_repost_count": run.new_repost_count,
                     "error_code": run.error_code,
                     "error_message": run.error_message,
@@ -157,11 +187,50 @@ class ManualGlobalSearchView(APIView):
     def post(self, request: Request) -> Response:
         serializer = ManualGlobalSearchSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        article_ids = serializer.validated_data["article_ids"]
+        data = serializer.validated_data
+        selection_mode = cast(str, data.get("selection_mode", "IDS"))
+        if selection_mode == "FILTER":
+            filters = cast(dict[str, object], data["filters"])
+            selected = Article.objects.all()
+            if value := filters.get("published_from"):
+                selected = selected.filter(published_date__gte=str(value))
+            if value := filters.get("published_to"):
+                selected = selected.filter(published_date__lte=str(value))
+            if value := filters.get("channel"):
+                selected = selected.filter(channel_code=str(value))
+            if value := filters.get("section"):
+                selected = selected.filter(section_code=str(value))
+            if value := filters.get("monitoring_status"):
+                selected = selected.filter(monitoring_status=str(value))
+            if value := filters.get("q"):
+                selected = selected.filter(title__icontains=str(value))
+            reposts = RepostRecord.objects.filter(
+                article_id=OuterRef("pk"),
+                is_valid=True,
+                content_relation=ContentRelation.REPOST,
+            )
+            if value := filters.get("site_domain"):
+                selected = selected.filter(Exists(reposts.filter(site_domain__iexact=str(value))))
+            if (value := str(filters.get("has_repost", "")).lower()) in {"true", "false"}:
+                selected = selected.filter(Exists(reposts) if value == "true" else ~Exists(reposts))
+            article_ids = list(selected.order_by("id").values_list("id", flat=True)[:501])
+            if len(article_ids) > 500:
+                return Response(
+                    {
+                        "success": False,
+                        "error": {
+                            "code": "MANUAL_SEARCH_LIMIT",
+                            "message": "一次最多检测 500 篇，请缩小筛选范围。",
+                        },
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            article_ids = cast(list[int], data["article_ids"])
         articles = list(Article.objects.filter(id__in=article_ids).only("id", "status"))
         found_ids = {article.id for article in articles}
         missing_ids = sorted(set(article_ids) - found_ids)
-        unavailable_ids = sorted(article.id for article in articles if article.status != ArticleStatus.ACTIVE)
+        unavailable_ids = sorted(article.id for article in articles if article.status == ArticleStatus.ARCHIVED)
         if missing_ids or unavailable_ids:
             return Response(
                 {
@@ -169,7 +238,10 @@ class ManualGlobalSearchView(APIView):
                     "error": {
                         "code": "MANUAL_SEARCH_ARTICLE_UNAVAILABLE",
                         "message": "手动全网检测仅支持状态为监测中的文章。",
-                        "details": {"missing_article_ids": missing_ids, "unavailable_article_ids": unavailable_ids},
+                        "details": {
+                            "missing_article_ids": missing_ids,
+                            "unavailable_article_ids": unavailable_ids,
+                        },
                     },
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -178,12 +250,23 @@ class ManualGlobalSearchView(APIView):
             search_article_reposts.delay(article.id, manual=True)
         record_audit(
             request,
-            action_type="MANUAL_GLOBAL_SEARCH_QUEUED",
+            action_type=(
+                "REPOST_SEARCH_FILTER_BATCH"
+                if selection_mode == "FILTER"
+                else ("REPOST_SEARCH_MANUAL_SINGLE" if len(article_ids) == 1 else "REPOST_SEARCH_MANUAL_BATCH")
+            ),
             target_type="Article",
             target_id="manual-global-search",
-            after_data={"article_ids": article_ids, "count": len(article_ids)},
+            after_data={
+                "article_ids": article_ids,
+                "count": len(article_ids),
+                "selection_mode": selection_mode,
+            },
         )
-        return ok({"article_ids": article_ids, "queued_count": len(article_ids)}, status.HTTP_202_ACCEPTED)
+        return ok(
+            {"article_ids": article_ids, "queued_count": len(article_ids)},
+            status.HTTP_202_ACCEPTED,
+        )
 
 
 class SearchRunCandidateListView(APIView):
@@ -248,9 +331,16 @@ class ArticleIngestConflictReviewView(APIView):
                     },
                 )
                 audit_action = "ARTICLE_DUPLICATE_LINKED"
-        except (ArticleIngestConflict.DoesNotExist, ValueError, PermissionError) as error:
+        except (
+            ArticleIngestConflict.DoesNotExist,
+            ValueError,
+            PermissionError,
+        ) as error:
             return Response(
-                {"success": False, "error": {"code": "CONFLICT_REVIEW_FAILED", "message": str(error)}},
+                {
+                    "success": False,
+                    "error": {"code": "CONFLICT_REVIEW_FAILED", "message": str(error)},
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         record_audit(
@@ -258,6 +348,10 @@ class ArticleIngestConflictReviewView(APIView):
             action_type="SOURCE_INGEST_CONFLICT_REVIEWED",
             target_type="ArticleIngestConflict",
             target_id=conflict.id,
-            after_data={"status": conflict.status, "reason": reason, "article_action": audit_action},
+            after_data={
+                "status": conflict.status,
+                "reason": reason,
+                "article_action": audit_action,
+            },
         )
         return ok(ArticleIngestConflictSerializer(conflict).data)

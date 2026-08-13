@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from hashlib import sha256
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -21,8 +22,21 @@ from apps.reposts.export_services import (
     filtered_articles,
     sanitize_excel_sheet_name,
 )
-from apps.reposts.models import RepostRecord
-from apps.sources.models import SearchCandidateDisposition, SearchRun, SearchRunCandidate, SearchRunStatus, Source
+from apps.reposts.models import ContentRelation, RepostRecord
+from apps.reposts.query_services import (
+    RepostQueryFilters,
+    filtered_repost_articles,
+    repost_trend,
+    result_summary,
+)
+from apps.sources.models import (
+    OwnedChannel,
+    SearchCandidateDisposition,
+    SearchRun,
+    SearchRunCandidate,
+    SearchRunStatus,
+    Source,
+)
 from apps.sources.services import (
     _next_search_time,
     canonicalize_http_url,
@@ -52,6 +66,21 @@ class ErrorProvider:
 
     def search(self, query: str, **kwargs: object) -> list[SearchCandidate]:
         raise SearchProviderRateLimited("rate limited")
+
+
+class PerStageProvider:
+    code = "per-stage"
+
+    def __init__(self, responses: dict[str, list[SearchCandidate] | Exception]) -> None:
+        self.responses = responses
+        self.calls: list[str] = []
+
+    def search(self, query: str, **kwargs: object) -> list[SearchCandidate]:
+        self.calls.append(query)
+        response = self.responses[query]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class InspectingProvider:
@@ -130,6 +159,30 @@ def test_source_token_is_hashed_and_ingest_api_is_idempotent(source: Source, ope
 
 
 @pytest.mark.django_db
+def test_source_ingest_accepts_optional_channel_fields_without_breaking_existing_payload(
+    source: Source, operator: User
+) -> None:
+    token = create_source_token(source=source, name="channel-test", created_by=operator)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.plaintext}")
+    payload = {
+        "title": "带栏目字段的原创文章",
+        "author": "作者",
+        "published_at": timezone.now().isoformat(),
+        "original_url": "https://www.weeklyonstock.com/article/channel-test",
+        "channel_code": "RIGHTS",
+        "channel_name": "证券维权",
+        "section_code": "COMPANY",
+        "section_name": "涉事公司报道",
+    }
+    with patch("apps.sources.tasks.search_article_reposts.delay"):
+        response = client.post("/api/v1/source-ingest/articles", payload, format="json")
+    assert response.status_code == 201
+    article = Article.objects.get(pk=response.json()["data"]["article_id"])
+    assert (article.channel_code, article.section_code) == ("RIGHTS", "COMPANY")
+
+
+@pytest.mark.django_db
 def test_source_ingest_rejects_invalid_expired_inactive_tokens_and_source(source: Source, operator: User) -> None:
     client = APIClient()
     client.credentials(HTTP_AUTHORIZATION="Bearer invalid")
@@ -180,7 +233,12 @@ def test_manual_global_search_allows_completed_article_without_restarting_lifecy
 ) -> None:
     article = create_source_article(source=source, operator=operator, days_old=8)
     original_next_search_at = article.next_search_at
-    with patch("apps.sources.tasks.search_article", return_value=SimpleNamespace(id=77, status="SUCCESS")) as search:
+    with (
+        patch("apps.sources.tasks.search_article", return_value=SimpleNamespace(id=77, status="SUCCESS")) as search,
+        patch("apps.sources.tasks.redis.Redis.from_url") as redis_from_url,
+    ):
+        lock = redis_from_url.return_value.lock.return_value
+        lock.acquire.return_value = True
         assert search_article_reposts.run(article.id, manual=True) == 77
     article.refresh_from_db()
     assert search.called
@@ -271,24 +329,221 @@ def test_global_search_deduplicates_urls_excludes_source_and_preserves_history(s
     first_run = search_article(article, provider=StaticProvider(candidates))
     assert first_run.status == SearchRunStatus.SUCCESS
     assert SearchRunCandidate.objects.filter(search_run=first_run).count() == 3
-    assert (
-        SearchRunCandidate.objects.filter(
-            search_run=first_run, disposition=SearchCandidateDisposition.EXCLUDED_SOURCE
-        ).count()
-        == 1
-    )
-    assert RepostRecord.objects.filter(article=article).count() == 2
+    owned_candidate = SearchRunCandidate.objects.get(search_run=first_run, canonical_url__contains="weeklyonstock")
+    assert owned_candidate.content_relation == ContentRelation.OWNED
+    assert RepostRecord.objects.filter(article=article).count() == 3
+    assert RepostRecord.objects.filter(article=article, content_relation=ContentRelation.REPOST).count() == 2
     first_record = RepostRecord.objects.filter(article=article).order_by("canonical_url").first()
     assert first_record is not None
     first_found = first_record.first_found_at
 
     search_article(article, provider=StaticProvider([]))
-    assert RepostRecord.objects.filter(article=article).count() == 2
+    assert RepostRecord.objects.filter(article=article).count() == 3
     mark_repost_availability(record=first_record, status="REMOVED")
     first_record.refresh_from_db()
     assert first_record.first_found_at == first_found
     assert first_record.availability_status == "REMOVED"
-    assert RepostRecord.objects.filter(article=article, is_valid=True).count() == 2
+    assert (
+        RepostRecord.objects.filter(
+            article=article,
+            is_valid=True,
+            content_relation=ContentRelation.REPOST,
+        ).count()
+        == 2
+    )
+
+
+@pytest.mark.django_db
+def test_two_stage_search_runs_exact_then_broad_deduplicates_and_retains_stage_counts(
+    source: Source, operator: User
+) -> None:
+    article = create_source_article(source=source, operator=operator)
+    exact_query = f'"{article.title}"'
+    broad_query = article.title
+    shared = SearchCandidate(title=article.title, url="https://external.example.com/shared")
+    broad_only = SearchCandidate(title=article.title, url="https://external.example.com/broad")
+    provider = PerStageProvider({exact_query: [shared], broad_query: [shared, broad_only]})
+
+    run = search_article(article, provider=provider)
+
+    assert provider.calls == [exact_query, broad_query]
+    assert run.exact_candidate_count == 1
+    assert run.broad_candidate_count == 2
+    assert run.merged_candidate_count == 2
+    assert run.repost_count == 2
+    shared_candidate = SearchRunCandidate.objects.get(
+        search_run=run, canonical_url="https://external.example.com/shared"
+    )
+    assert shared_candidate.search_phases == ["EXACT", "BROAD"]
+
+
+@pytest.mark.django_db
+def test_broad_stage_can_succeed_after_exact_stage_failure(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    provider = PerStageProvider(
+        {
+            f'"{article.title}"': SearchProviderRateLimited("exact limited"),
+            article.title: [SearchCandidate(title=article.title, url="https://external.example.com/fallback")],
+        }
+    )
+
+    run = search_article(article, provider=provider)
+
+    assert run.status == SearchRunStatus.SUCCESS
+    assert run.error_code == "PARTIAL_STAGE_FAILURE"
+    assert run.repost_count == 1
+
+
+@pytest.mark.django_db
+def test_owned_channel_requires_configured_account_evidence_and_external_is_repost(
+    source: Source, operator: User
+) -> None:
+    article = create_source_article(source=source, operator=operator)
+    OwnedChannel.objects.create(
+        code="TEST_PLATFORM",
+        name="测试自有账号",
+        channel_type="PLATFORM_ACCOUNT",
+        match_rules={"platform_domains": ["platform.example.com"], "account_names": ["证券市场周刊"]},
+    )
+    provider = StaticProvider(
+        [
+            SearchCandidate(
+                title=article.title,
+                url="https://platform.example.com/owned",
+                raw_data={"account_name": "证券市场周刊"},
+            ),
+            SearchCandidate(title=article.title, url="https://platform.example.com/uncertain"),
+            SearchCandidate(title=article.title, url="https://external.example.com/repost"),
+        ]
+    )
+
+    run = search_article(article, provider=provider)
+
+    assert run.owned_count == 1
+    assert run.review_required_count == 1
+    assert run.repost_count == 1
+    assert RepostRecord.objects.filter(article=article, content_relation=ContentRelation.OWNED).count() == 1
+    assert RepostRecord.objects.filter(article=article, content_relation=ContentRelation.REPOST).count() == 1
+
+
+@pytest.mark.django_db
+def test_automatic_rule_change_does_not_downgrade_retained_external_repost(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    candidate = SearchCandidate(title=article.title, url="https://stable.example.com/article")
+    search_article(article, provider=StaticProvider([candidate]))
+    record = RepostRecord.objects.get(article=article)
+    assert record.content_relation == ContentRelation.REPOST
+
+    OwnedChannel.objects.create(
+        code="STABLE_SITE",
+        name="后续配置的自有站点",
+        channel_type="OFFICIAL_WEBSITE",
+        match_rules={"domains": ["stable.example.com"]},
+    )
+    second_run = search_article(article, provider=StaticProvider([candidate]))
+
+    record.refresh_from_db()
+    assert record.content_relation == ContentRelation.REPOST
+    assert second_run.owned_count == 1
+    assert SearchRunCandidate.objects.get(search_run=second_run).content_relation == ContentRelation.OWNED
+
+
+@pytest.mark.django_db
+def test_workspace_query_and_trend_exclude_owned_but_keep_sticky_reposts(source: Source, operator: User) -> None:
+    first = create_source_article(source=source, operator=operator)
+    second = Article.objects.create(
+        title="第二篇可统计文章",
+        normalized_title="第二篇可统计文章",
+        published_date=first.published_date,
+        published_at=first.published_at,
+        channel_code="RIGHTS",
+        channel_name="证券维权",
+        section_code="COMPANY",
+        section_name="涉事公司报道",
+        monitoring_status=ArticleMonitoringStatus.COMPLETED,
+        created_by=operator,
+    )
+    now = timezone.now()
+    for article, suffix, relation in [
+        (first, "one", ContentRelation.REPOST),
+        (first, "owned", ContentRelation.OWNED),
+        (second, "two", ContentRelation.REPOST),
+    ]:
+        url = f"https://trend.example.com/{suffix}"
+        RepostRecord.objects.create(
+            article=article,
+            site_name="趋势站",
+            site_domain="trend.example.com",
+            raw_url=url,
+            canonical_url=url,
+            canonical_url_hash=sha256(url.encode("utf-8")).hexdigest(),
+            original_url=url,
+            normalized_url=url,
+            normalized_url_hash=sha256(url.encode("utf-8")).hexdigest(),
+            repost_title=article.title,
+            result_title=article.title,
+            first_discovered_at=now,
+            first_found_at=now,
+            last_checked_at=now,
+            last_seen_at=now,
+            availability_status="REMOVED" if suffix == "one" else "AVAILABLE",
+            content_relation=relation,
+            data_source="TEST_ONLY",
+        )
+    queryset = filtered_repost_articles(
+        RepostQueryFilters(channel="RIGHTS"), as_of=timezone.now() + timedelta(seconds=1)
+    )
+    assert list(queryset.values_list("id", flat=True)) == [second.id]
+    all_articles = filtered_repost_articles(RepostQueryFilters(), as_of=timezone.now() + timedelta(seconds=1))
+    assert result_summary(all_articles, as_of=timezone.now() + timedelta(seconds=1))["repost_url_count"] == 2
+    assert repost_trend(all_articles, as_of=timezone.now() + timedelta(seconds=1))[0]["repost_url_count"] == 2
+
+
+@pytest.mark.django_db
+def test_result_workspace_is_paginated_and_export_is_read_only(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    now = timezone.now()
+    record = RepostRecord.objects.create(
+        article=article,
+        site_name="外部站点",
+        site_domain="external.example.com",
+        raw_url="https://external.example.com/a",
+        canonical_url="https://external.example.com/a",
+        canonical_url_hash="c" * 64,
+        original_url="https://external.example.com/a",
+        normalized_url="https://external.example.com/a",
+        normalized_url_hash="c" * 64,
+        repost_title=article.title,
+        result_title=article.title,
+        first_discovered_at=now,
+        first_found_at=now,
+        last_checked_at=now,
+        last_seen_at=now,
+        data_source="TEST_ONLY",
+    )
+    client = APIClient()
+    client.force_authenticate(operator)
+    response = client.get(f"/api/v1/repost-monitor/results?published_from={article.published_date}&page=1&page_size=20")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["pagination"] == {"page": 1, "page_size": 20, "total": 1}
+    assert data["monitoring_status_counts"][ArticleMonitoringStatus.ACTIVE] == 1
+    assert data["summary"]["repost_url_count"] == 1
+    assert data["trend"][0]["repost_url_count"] == 1
+    detail = client.get(f"/api/v1/articles/{article.id}/discovered-publications?as_of={data['as_of']}")
+    assert detail.status_code == 200
+    assert detail.json()["data"]["reposts"][0]["id"] == record.id
+    run = search_article(
+        article,
+        provider=StaticProvider([SearchCandidate(title="不达阈值候选", url="https://external.example.com/candidate")]),
+    )
+    detail = client.get(f"/api/v1/articles/{article.id}/discovered-publications?as_of={data['as_of']}")
+    assert detail.json()["data"]["candidates"][0]["search_run_id"] == run.id
+    assert detail.json()["data"]["candidates"][0]["canonical_url"] == "https://external.example.com/candidate"
+    with patch("apps.sources.services.configured_search_provider") as configured_provider:
+        export = client.get(f"/api/v1/repost-monitor/export.xlsx?as_of={data['as_of']}")
+    assert export.status_code == 200
+    configured_provider.assert_not_called()
 
 
 @pytest.mark.django_db

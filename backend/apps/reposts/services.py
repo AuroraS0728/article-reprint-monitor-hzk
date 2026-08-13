@@ -10,7 +10,7 @@ from apps.articles.models import Article
 from apps.platforms.models import Platform
 from apps.sources.services import canonicalize_http_url
 
-from .models import RepostRecord
+from .models import ContentRelation, RepostRecord
 
 
 class ManualSupplementConflict(ValueError):
@@ -50,6 +50,9 @@ def create_manual_supplement(
             manual_reason=reason,
             manually_added_by=actor,
             manually_added_at=now,
+            content_relation=ContentRelation.REPOST,
+            classification_reason="MANUAL_SUPPLEMENT",
+            classified_at=now,
         )
     except IntegrityError as error:
         raise ManualSupplementConflict("该转载链接已被并发创建，请刷新后查看。") from error
@@ -63,7 +66,7 @@ def manual_repost_before_data(record: RepostRecord) -> dict[str, object]:
         "data_source": record.data_source,
         "manual_reason": record.manual_reason,
         "is_valid": record.is_valid,
-        "invalidated_at": record.invalidated_at.isoformat() if record.invalidated_at else None,
+        "invalidated_at": (record.invalidated_at.isoformat() if record.invalidated_at else None),
         "invalidation_reason": record.invalidation_reason,
     }
 

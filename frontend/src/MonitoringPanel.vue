@@ -1,324 +1,83 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { api, downloadApiFile } from "./api";
 
+type Tab = "detect" | "status" | "results" | "export";
 type Article = {
-  id: number;
-  title: string;
-  published_date: string;
-  status: "ACTIVE" | "ARCHIVED" | "STOPPED";
-  monitoring_status: "PENDING" | "ACTIVE" | "COMPLETED" | "ERROR";
-  last_searched_at: string | null;
-  next_search_at: string | null;
-  repost_url_count: number;
+  id: number; title: string; published_at: string | null; published_date: string; channel_code: string; channel_name: string; section_code: string; section_name: string;
+  author: string; monitoring_status: string; monitor_started_at: string | null; monitor_until: string | null; last_searched_at: string | null; next_search_at: string | null;
+  search_run_count: number; repost_site_count: number; repost_url_count: number;
 };
-type Platform = { id: number; name: string; status: string };
-type Batch = { id: number; trigger: string; status: string; article_ids: number[]; platform_ids: number[]; created_at: string };
-type MatrixItem = { result_id: number; article_id: number; platform_id: number; status: "FOUND" | "NOT_FOUND" | "UNKNOWN"; reason_code: string; completed_at: string | null };
-type Repost = { id: number; original_url: string; normalized_url: string; final_url: string; repost_title: string; repost_published_display: string; first_discovered_at: string; last_checked_at: string; data_source: string };
-type GlobalSearchRun = {
-  id: number;
-  article_id: number;
-  status: "PENDING" | "RUNNING" | "SUCCESS" | "ERROR";
-  provider: string;
-  candidate_count: number;
-  matched_count: number;
-  new_repost_count: number;
-  error_code: string;
-  error_message: string;
-  started_at: string | null;
-  completed_at: string | null;
-  created_at: string;
-};
-type GlobalSearchCandidate = {
-  id: number;
-  title: string;
-  site_name: string;
-  site_domain: string;
-  raw_url: string;
-  canonical_url: string;
-  published_at: string | null;
-  disposition: "PENDING" | "EXCLUDED_SOURCE" | "EXCLUDED_ORIGINAL" | "EXCLUDED_TOO_EARLY" | "NOT_MATCHED" | "MATCHED";
-  similarity_score: string | null;
-  reason_code: string;
-  created_at: string;
-};
+type Option = { code: string; name: string };
+type Summary = { article_count: number; repost_article_count: number; repost_site_count: number; repost_url_count: number };
+type TrendPoint = { published_date: string; article_count: number; site_count: number; repost_url_count: number };
+type Workspace = { as_of: string; results: Article[]; summary: Summary; monitoring_status_counts: Record<string, number>; trend: TrendPoint[]; channels: Option[]; sections: Option[]; pagination: { page: number; page_size: number; total: number } };
+type Publication = { id: number; site_name: string; site_domain: string; canonical_url: string; normalized_url: string; result_title: string; content_relation: string; owned_channel_name: string | null; first_found_at: string | null; availability_status: string };
+type SearchRun = { id: number; status: string; provider: string; exact_candidate_count: number; broad_candidate_count: number; merged_candidate_count: number; matched_count: number; owned_count: number; repost_count: number; review_required_count: number; new_repost_count: number; error_code: string; error_message: string; created_at: string; completed_at: string | null };
+type Candidate = { id: number; search_run_id: number; searched_at: string; title: string; site_name: string; site_domain: string; canonical_url: string; published_at: string | null; search_phases: string[]; disposition: string; similarity_score: string | null; content_relation: string; owned_channel_name: string | null; classification_reason: string };
 
-const articles = ref<Article[]>([]);
-const platforms = ref<Platform[]>([]);
-const batches = ref<Batch[]>([]);
-const matrix = ref<MatrixItem[]>([]);
-const selectedArticleIds = ref<number[]>([]);
-const selectedPlatformIds = ref<number[]>([]);
-const useAllEnabledPlatforms = ref(true);
-const dateRange = ref<[string, string] | null>(null);
-const matrixDate = ref("");
-const reposts = ref<Repost[]>([]);
-const globalRuns = ref<GlobalSearchRun[]>([]);
-const selectedGlobalArticleIds = ref<number[]>([]);
-const repostDialogOpen = ref(false);
-const repostLoading = ref(false);
-const loading = ref(true);
-const submitting = ref(false);
-const exporting = ref(false);
-const globalSearching = ref(false);
-const candidateDialogOpen = ref(false);
-const candidateLoading = ref(false);
-const selectedRun = ref<GlobalSearchRun | null>(null);
-const runCandidates = ref<GlobalSearchCandidate[]>([]);
-const error = ref("");
-let refreshTimer: number | undefined;
+const tab = ref<Tab>((new URLSearchParams(location.search).get("tab") as Tab) || "detect");
+const loading = ref(true); const submitting = ref(false); const exporting = ref(false); const error = ref("");
+const rows = ref<Article[]>([]); const channels = ref<Option[]>([]); const sections = ref<Option[]>([]); const summary = ref<Summary>({ article_count: 0, repost_article_count: 0, repost_site_count: 0, repost_url_count: 0 }); const monitoringStatusCounts = ref<Record<string, number>>({ PENDING: 0, ACTIVE: 0, COMPLETED: 0, ERROR: 0 }); const trend = ref<TrendPoint[]>([]);
+const page = ref(1); const pageSize = ref(20); const total = ref(0); const asOf = ref(""); const selected = ref<Article[]>([]);
+const filters = ref({ range: "7", published_from: "", published_to: "", channel: "", section: "", monitoring_status: "", has_repost: "", site_domain: "", q: "" });
+const detailOpen = ref(false); const detailLoading = ref(false); const detail = ref<{ article: Article; reposts: Publication[]; owned: Publication[]; runs: SearchRun[]; candidates: Candidate[] } | null>(null);
+let pollTimer: number | undefined;
 
-const activeArticles = computed(() => articles.value.filter((article) => article.status === "ACTIVE"));
-const manualSearchArticles = computed(() => articles.value.filter((article) => article.status === "ACTIVE"));
+function shanghaiDate(value = new Date()): string { const parts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(value); const field = (type: string): string => parts.find((part) => part.type === type)?.value || ""; return `${field("year")}-${field("month")}-${field("day")}`; }
+function shanghaiDateDaysAgo(days: number): string { const now = new Date(); const shanghaiNow = new Date(`${shanghaiDate(now)}T12:00:00+08:00`); shanghaiNow.setDate(shanghaiNow.getDate() - days); return shanghaiDate(shanghaiNow); }
+const presetStart = computed(() => { const days = Number(filters.value.range); return days ? shanghaiDateDaysAgo(days - 1) : ""; });
+const effectiveFrom = computed(() => filters.value.range === "custom" ? filters.value.published_from : presetStart.value);
+const query = computed(() => { const params = new URLSearchParams({ page: String(page.value), page_size: String(pageSize.value) }); const items: Record<string, string> = { published_from: effectiveFrom.value, published_to: filters.value.range === "custom" ? filters.value.published_to : shanghaiDate(), channel: filters.value.channel, section: filters.value.section, monitoring_status: filters.value.monitoring_status, has_repost: filters.value.has_repost, site_domain: filters.value.site_domain, q: filters.value.q }; Object.entries(items).forEach(([key, value]) => { if (value) params.set(key, value); }); return params; });
+const svgPoints = computed(() => { if (!trend.value.length) return ""; const max = Math.max(1, ...trend.value.map((point) => point.repost_url_count)); return trend.value.map((point, index) => `${index * (680 / Math.max(1, trend.value.length - 1)) + 20},${150 - (point.repost_url_count / max) * 120}`).join(" "); });
+
+function updateUrl(): void { const params = new URLSearchParams(location.search); params.set("tab", tab.value); history.replaceState(null, "", `${location.pathname}?${params.toString()}`); }
+function statusLabel(value: string): string { return ({ PENDING: "待监测", ACTIVE: "监测中", COMPLETED: "已完成", ERROR: "异常" } as Record<string, string>)[value] || value; }
+function relationLabel(value: string): string { return ({ REPOST: "外部转载", OWNED: "自有分发", REVIEW_REQUIRED: "待审核" } as Record<string, string>)[value] || value; }
+function rangeChanged(): void { if (filters.value.range !== "custom") { filters.value.published_from = ""; filters.value.published_to = ""; } page.value = 1; void load(); }
+function resetFilters(): void { filters.value = { range: "7", published_from: "", published_to: "", channel: "", section: "", monitoring_status: "", has_repost: "", site_domain: "", q: "" }; page.value = 1; void load(); }
 
 async function load(showLoading = true): Promise<void> {
-  if (showLoading) loading.value = true;
-  error.value = "";
-  try {
-    const [articleData, platformData, batchData, matrixData, defaults, runData] = await Promise.all([
-      api<Article[]>("/articles"),
-      api<Platform[]>("/platforms"),
-      api<Batch[]>("/detection-batches"),
-      api<{ matrix: Record<string, MatrixItem> }>(`/status-matrix${matrixDate.value ? `?as_of=${matrixDate.value}` : ""}`),
-      api<{ article_ids: number[] }>("/detection-selection-defaults"),
-      api<GlobalSearchRun[]>("/global-search-runs"),
-    ]);
-    articles.value = articleData;
-    platforms.value = platformData.filter((platform) => platform.status === "ENABLED");
-    batches.value = batchData;
-    matrix.value = Object.values(matrixData.matrix);
-    globalRuns.value = runData;
-    selectedArticleIds.value = defaults.article_ids.filter((articleId) => activeArticles.value.some((article) => article.id === articleId));
-  } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : "加载监测数据失败";
-  } finally {
-    if (showLoading) loading.value = false;
-  }
+  if (showLoading) loading.value = true; error.value = "";
+  try { const data = await api<Workspace>(`/repost-monitor/results?${query.value.toString()}`); rows.value = data.results; channels.value = data.channels; sections.value = data.sections; summary.value = data.summary; monitoringStatusCounts.value = data.monitoring_status_counts; trend.value = data.trend; total.value = data.pagination.total; asOf.value = data.as_of; }
+  catch (caught) { error.value = caught instanceof Error ? caught.message : "转载检测数据加载失败"; }
+  finally { if (showLoading) loading.value = false; }
 }
-
-function globalStatusLabel(status: Article["monitoring_status"]): string {
-  return { PENDING: "待监测", ACTIVE: "监测中", COMPLETED: "监测已完成", ERROR: "异常" }[status];
+async function queueIds(ids: number[], selectionMode: "IDS" | "FILTER" = "IDS"): Promise<void> {
+  submitting.value = true; error.value = "";
+  try { const payload = selectionMode === "FILTER" ? { selection_mode: "FILTER", filters: Object.fromEntries(query.value.entries()) } : { selection_mode: "IDS", article_ids: ids }; const response = await api<{ queued_count: number }>("/global-search-runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); ElMessage.success(`已提交 ${response.queued_count} 篇文章进行检测`); selected.value = []; await load(false); }
+  catch (caught) { error.value = caught instanceof Error ? caught.message : "提交检测失败"; }
+  finally { submitting.value = false; }
 }
+async function queueSelected(): Promise<void> { if (!selected.value.length) { ElMessage.warning("请先选择文章"); return; } await queueIds(selected.value.map((item) => item.id)); }
+async function queueFilter(): Promise<void> { if (!total.value) return; try { await ElMessageBox.confirm(`即将按当前筛选范围发起检测，共 ${total.value} 篇文章。一次最多 500 篇。`, "确认全网转载检测", { type: "warning" }); await queueIds([], "FILTER"); } catch { /* user cancelled */ } }
+async function openDetail(article: Article): Promise<void> { detailOpen.value = true; detailLoading.value = true; detail.value = null; try { const data = await api<{ reposts: Publication[]; owned: Publication[]; search_runs: SearchRun[]; candidates: Candidate[] }>(`/articles/${article.id}/discovered-publications?as_of=${encodeURIComponent(asOf.value)}`); detail.value = { article, reposts: data.reposts, owned: data.owned, runs: data.search_runs, candidates: data.candidates }; } catch (caught) { error.value = caught instanceof Error ? caught.message : "详情加载失败"; } finally { detailLoading.value = false; } }
+async function exportExcel(): Promise<void> { exporting.value = true; try { await load(false); await downloadApiFile(`/repost-monitor/export.xlsx?${query.value.toString()}&as_of=${encodeURIComponent(asOf.value)}`); } catch (caught) { error.value = caught instanceof Error ? caught.message : "导出失败"; } finally { exporting.value = false; } }
 
-function runStatusLabel(status: GlobalSearchRun["status"]): string {
-  return { PENDING: "排队中", RUNNING: "搜索中", SUCCESS: "已完成", ERROR: "失败" }[status];
-}
-
-function candidateStatusLabel(disposition: GlobalSearchCandidate["disposition"]): string {
-  return {
-    PENDING: "待判定",
-    EXCLUDED_SOURCE: "原创来源链接",
-    EXCLUDED_ORIGINAL: "原创文章链接",
-    EXCLUDED_TOO_EARLY: "发布时间早于原创",
-    NOT_MATCHED: "未匹配",
-    MATCHED: "已匹配转载",
-  }[disposition];
-}
-
-async function loadCandidates(runId: number): Promise<void> {
-  candidateLoading.value = true;
-  try {
-    runCandidates.value = await api<GlobalSearchCandidate[]>(`/global-search-runs/${runId}/candidates`);
-  } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : "候选页面加载失败";
-  } finally {
-    candidateLoading.value = false;
-  }
-}
-
-async function showCandidates(run: GlobalSearchRun): Promise<void> {
-  selectedRun.value = run;
-  candidateDialogOpen.value = true;
-  runCandidates.value = [];
-  await loadCandidates(run.id);
-}
-
-async function queueGlobalSearch(): Promise<void> {
-  if (!selectedGlobalArticleIds.value.length) {
-    error.value = "请选择至少一篇状态为监测中的文章。";
-    return;
-  }
-  globalSearching.value = true;
-  error.value = "";
-  try {
-    await api("/global-search-runs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ article_ids: selectedGlobalArticleIds.value }),
-    });
-    await load();
-  } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : "提交全网检测失败";
-  } finally {
-    globalSearching.value = false;
-  }
-}
-
-function articleName(id: number): string { return articles.value.find((article) => article.id === id)?.title ?? `文章 #${id}`; }
-function platformName(id: number): string { return platforms.value.find((platform) => platform.id === id)?.name ?? `平台 #${id}`; }
-function statusLabel(status: MatrixItem["status"]): string { return status === "FOUND" ? "1" : status === "NOT_FOUND" ? "0" : "—"; }
-
-async function showReposts(row: MatrixItem): Promise<void> {
-  if (row.status !== "FOUND") return;
-  repostDialogOpen.value = true;
-  repostLoading.value = true;
-  reposts.value = [];
-  try { reposts.value = await api<Repost[]>(`/detection-results/${row.result_id}/reposts`); }
-  catch (caught) { error.value = caught instanceof Error ? caught.message : "转载链接加载失败"; }
-  finally { repostLoading.value = false; }
-}
-
-async function createBatch(automatic: boolean): Promise<void> {
-  if (!selectedArticleIds.value.length && !dateRange.value) {
-    error.value = "请选择文章或原创发布日期范围。";
-    return;
-  }
-  if (!useAllEnabledPlatforms.value && !selectedPlatformIds.value.length) {
-    error.value = "请选择平台或全部启用平台。";
-    return;
-  }
-  submitting.value = true;
-  error.value = "";
-  try {
-    await api("/detection-batches", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        article_ids: selectedArticleIds.value,
-        platform_ids: selectedPlatformIds.value,
-        article_date_from: dateRange.value?.[0],
-        article_date_to: dateRange.value?.[1],
-        use_all_enabled_platforms: useAllEnabledPlatforms.value,
-        automatic,
-      }),
-    });
-    await load();
-  } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : "创建检测批次失败";
-  } finally {
-    submitting.value = false;
-  }
-}
-
-async function exportExcel(): Promise<void> {
-  exporting.value = true;
-  error.value = "";
-  try {
-    const query = new URLSearchParams();
-    if (dateRange.value) {
-      query.set("start_date", dateRange.value[0]);
-      query.set("end_date", dateRange.value[1]);
-    }
-    if (selectedArticleIds.value.length === 1) query.set("article_id", String(selectedArticleIds.value[0]));
-    await downloadApiFile(`/repost-monitor/export.xlsx${query.size ? `?${query.toString()}` : ""}`);
-  } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : "Excel 生成失败";
-  } finally {
-    exporting.value = false;
-  }
-}
-
-async function refreshSavedSearchData(): Promise<void> {
-  await load(false);
-  if (candidateDialogOpen.value && selectedRun.value) {
-    await loadCandidates(selectedRun.value.id);
-  }
-}
-
-onMounted(async () => {
-  await load();
-  // This reads only persisted API data. Short polling makes a RUNNING search
-  // observable; it does not fabricate results or trigger another search.
-  refreshTimer = window.setInterval(() => void refreshSavedSearchData(), 5 * 1000);
-});
-onBeforeUnmount(() => {
-  if (refreshTimer !== undefined) window.clearInterval(refreshTimer);
-});
+watch(tab, updateUrl); watch([page, pageSize], () => void load());
+onMounted(async () => { await load(); pollTimer = window.setInterval(() => void load(false), 5 * 60 * 1000); });
+onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTimer); });
 </script>
 
 <template>
   <section class="monitoring-panel">
-    <h1>转载检测</h1>
-    <p>状态仅展示后台已保存的检测结果；刷新不会触发平台采集。</p>
+    <div class="heading"><div><h1>转载检测</h1><p>所有检测由后台搜索任务执行；列表刷新和导出只读取已保存数据。</p></div><el-button @click="load">刷新数据</el-button></div>
+    <el-tabs v-model="tab" class="workspace-tabs"><el-tab-pane label="全网转载检测" name="detect" /><el-tab-pane label="监测状态" name="status" /><el-tab-pane label="查看监测结果" name="results" /><el-tab-pane label="导出 Excel" name="export" /></el-tabs>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
-    <el-skeleton v-else-if="loading" :rows="4" animated />
+    <el-skeleton v-else-if="loading" :rows="8" animated />
     <template v-else>
-      <section>
-        <h2>全网转载检测</h2>
-        <p>使用已配置的合规搜索服务。手动检测只新增一次真实搜索，不会把“监测已完成”的历史文章重新纳入自动 7 天调度。</p>
-        <el-alert v-if="articles.length && !manualSearchArticles.length" title="没有状态为监测中的文章。请先在“原创文章”中恢复需要检测的文章。" type="warning" :closable="false" />
-        <el-empty v-else-if="!articles.length" description="暂无原创文章。" />
-        <template v-else>
-          <el-checkbox-group v-model="selectedGlobalArticleIds" class="article-selection">
-            <el-checkbox v-for="article in manualSearchArticles" :key="article.id" :value="article.id">
-              {{ article.title }}（{{ article.published_date }}，{{ globalStatusLabel(article.monitoring_status) }}，已发现 {{ article.repost_url_count }} 条）
-            </el-checkbox>
-          </el-checkbox-group>
-          <el-button type="primary" :loading="globalSearching" @click="queueGlobalSearch">立即全网检测</el-button>
-        </template>
-        <el-table v-if="globalRuns.length" :data="globalRuns" class="run-table">
-          <el-table-column label="文章" min-width="220"><template #default="scope">{{ articleName(scope.row.article_id) }}</template></el-table-column>
-          <el-table-column label="状态" width="100"><template #default="scope">{{ runStatusLabel(scope.row.status) }}</template></el-table-column>
-          <el-table-column prop="provider" label="搜索服务" width="130" />
-          <el-table-column label="候选数" width="90"><template #default="scope"><el-button link type="primary" :disabled="scope.row.candidate_count === 0" @click="showCandidates(scope.row)">{{ scope.row.candidate_count }}</el-button></template></el-table-column>
-          <el-table-column prop="matched_count" label="匹配数" width="90" />
-          <el-table-column prop="new_repost_count" label="新转载" width="90" />
-          <el-table-column prop="completed_at" label="完成时间" min-width="170" />
-          <el-table-column label="失败原因" min-width="160"><template #default="scope">{{ scope.row.error_code || scope.row.error_message || "—" }}</template></el-table-column>
-        </el-table>
-        <el-empty v-else description="尚无全网搜索运行记录。" />
-        <el-dialog v-model="candidateDialogOpen" :title="`搜索候选：${selectedRun ? articleName(selectedRun.article_id) : ''}`" width="90%">
-          <p>候选链接会在搜索服务返回后立即保存，并在本次搜索执行期间自动刷新。候选是正式保留的“搜索发现记录”，但不等同于确认转载；只有通过标题与时间规则核验的“已匹配转载”才会进入转载统计和报表。</p>
-          <el-skeleton v-if="candidateLoading" :rows="5" animated />
-          <el-empty v-else-if="!runCandidates.length" description="该旧搜索记录未保存候选明细；请重新执行一次全网检测。" />
-          <el-table v-else :data="runCandidates">
-            <el-table-column prop="site_name" label="站点" width="160"><template #default="scope">{{ scope.row.site_name || scope.row.site_domain || "—" }}</template></el-table-column>
-            <el-table-column prop="title" label="页面标题" min-width="240" />
-            <el-table-column label="链接" min-width="280"><template #default="scope"><a :href="scope.row.canonical_url || scope.row.raw_url" target="_blank" rel="noopener noreferrer">{{ scope.row.canonical_url || scope.row.raw_url }}</a></template></el-table-column>
-            <el-table-column prop="published_at" label="发布时间" width="180"><template #default="scope">{{ scope.row.published_at || "无" }}</template></el-table-column>
-            <el-table-column prop="created_at" label="发现时间" width="180" />
-            <el-table-column label="判定" width="150"><template #default="scope">{{ candidateStatusLabel(scope.row.disposition) }}</template></el-table-column>
-            <el-table-column prop="similarity_score" label="标题分" width="100"><template #default="scope">{{ scope.row.similarity_score ?? "—" }}</template></el-table-column>
-          </el-table>
-        </el-dialog>
-      </section>
-      <h2>固定平台检测（待验证适配器）</h2>
-      <el-alert title="此区域仅适用于已验证的平台适配器；当前不会把平台检测结果伪装成全网搜索结果。" type="info" :closable="false" />
-      <el-empty v-if="!activeArticles.length" description="暂无可进行固定平台检测的未归档文章。" />
-      <el-form v-else class="monitoring-form" label-position="top">
-        <el-form-item label="默认选择：上次已完成检测后新录入或新导入的文章">
-          <el-checkbox-group v-model="selectedArticleIds">
-            <el-checkbox v-for="article in activeArticles" :key="article.id" :value="article.id">{{ article.title }}（{{ article.published_date }}）</el-checkbox>
-          </el-checkbox-group>
-        </el-form-item>
-        <el-form-item label="原创文章发布日期范围">
-          <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始" end-placeholder="结束" />
-        </el-form-item>
-        <el-form-item label="平台">
-          <el-checkbox v-model="useAllEnabledPlatforms">全部启用平台</el-checkbox>
-          <el-checkbox-group v-if="!useAllEnabledPlatforms" v-model="selectedPlatformIds">
-            <el-checkbox v-for="platform in platforms" :key="platform.id" :value="platform.id">{{ platform.name }}</el-checkbox>
-          </el-checkbox-group>
-          <el-empty v-if="!platforms.length" description="暂无启用平台；未验证的平台不会参与检测。" />
-        </el-form-item>
-        <el-button type="primary" :loading="submitting" @click="createBatch(false)">立即检测一次</el-button>
-        <el-button :loading="submitting" @click="createBatch(true)">创建自动检测批次</el-button>
-        <el-button @click="load">刷新后台已有数据</el-button>
-        <el-button type="success" :loading="exporting" @click="exportExcel">{{ exporting ? "正在生成..." : "导出 Excel" }}</el-button>
-      </el-form>
-      <h2>固定平台检测批次</h2>
-      <el-empty v-if="!batches.length" description="尚未创建检测批次。" />
-      <el-table v-else :data="batches"><el-table-column prop="id" label="批次" width="90" /><el-table-column prop="trigger" label="类型" /><el-table-column prop="status" label="状态" /><el-table-column prop="created_at" label="创建时间" /></el-table>
-      <h2>状态矩阵</h2>
-      <el-form inline><el-form-item label="历史周或自定义日期"><el-date-picker v-model="matrixDate" type="date" value-format="YYYY-MM-DD" placeholder="留空查看当前状态" /></el-form-item><el-button @click="load">查询后台已有状态</el-button><el-button v-if="matrixDate" @click="matrixDate = ''; load()">查看当前状态</el-button></el-form>
-      <el-empty v-if="!matrix.length" description="暂无已保存的检测状态。" />
-      <el-table v-else :data="matrix"><el-table-column label="文章"><template #default="scope">{{ articleName(scope.row.article_id) }}</template></el-table-column><el-table-column label="平台"><template #default="scope">{{ platformName(scope.row.platform_id) }}</template></el-table-column><el-table-column label="状态"><template #default="scope"><el-button v-if="scope.row.status === 'FOUND'" link type="primary" @click="showReposts(scope.row)">1</el-button><span v-else>{{ statusLabel(scope.row.status) }}</span></template></el-table-column><el-table-column prop="reason_code" label="未确定原因" /><el-table-column prop="completed_at" label="最后检测时间" /></el-table>
-      <el-dialog v-model="repostDialogOpen" title="已发现的全部转载链接" width="80%"><el-skeleton v-if="repostLoading" :rows="3" animated /><el-empty v-else-if="!reposts.length" description="未找到已保存的转载链接。" /><el-table v-else :data="reposts"><el-table-column prop="repost_title" label="转载标题" min-width="180" /><el-table-column label="链接" min-width="220"><template #default="scope"><a :href="scope.row.final_url || scope.row.original_url" target="_blank" rel="noopener noreferrer">{{ scope.row.final_url || scope.row.original_url }}</a></template></el-table-column><el-table-column prop="repost_published_display" label="转载发布时间" /><el-table-column prop="first_discovered_at" label="首次发现" /></el-table></el-dialog>
+      <section class="filters"><el-select v-model="filters.channel" clearable placeholder="全部栏目" @change="page=1; load()"><el-option v-for="item in channels" :key="item.code" :label="item.name" :value="item.code" /></el-select><el-select v-model="filters.section" clearable placeholder="全部子栏目" @change="page=1; load()"><el-option v-for="item in sections" :key="item.code" :label="item.name" :value="item.code" /></el-select><el-radio-group v-model="filters.range" @change="rangeChanged"><el-radio-button label="7">近7日</el-radio-button><el-radio-button label="15">近15日</el-radio-button><el-radio-button label="30">近30日</el-radio-button><el-radio-button label="custom">自定义</el-radio-button></el-radio-group><template v-if="filters.range === 'custom'"><el-date-picker v-model="filters.published_from" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" /><el-date-picker v-model="filters.published_to" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" /></template><el-select v-model="filters.monitoring_status" clearable placeholder="监测状态"><el-option label="待监测" value="PENDING" /><el-option label="监测中" value="ACTIVE" /><el-option label="已完成" value="COMPLETED" /><el-option label="异常" value="ERROR" /></el-select><el-select v-model="filters.has_repost" clearable placeholder="是否有转载"><el-option label="已发现转载" value="true" /><el-option label="尚无转载" value="false" /></el-select><el-input v-model="filters.site_domain" clearable placeholder="转载网站域名" class="title-filter" /><el-input v-model="filters.q" clearable placeholder="搜索文章标题" class="title-filter" /><el-button type="primary" @click="page=1; load()">查询</el-button><el-button @click="resetFilters">重置</el-button></section>
+      <template v-if="tab === 'detect'"><div class="actions"><span>当前筛选共 {{ total }} 篇；已选择 {{ selected.length }} 篇</span><el-button type="primary" :disabled="!selected.length" :loading="submitting" @click="queueSelected">检测已选择文章</el-button><el-button :disabled="!total" :loading="submitting" @click="queueFilter">检测当前筛选范围</el-button></div><el-empty v-if="!rows.length" description="近7日暂无原创文章，可切换到近15日或调整筛选。" /><el-table v-else :data="rows" @selection-change="selected=$event"><el-table-column type="selection" width="52" /><el-table-column prop="published_at" label="发布时间" min-width="150" /><el-table-column label="栏目" min-width="130"><template #default="scope">{{ scope.row.channel_name || scope.row.section_name || '—' }}</template></el-table-column><el-table-column prop="title" label="标题" min-width="260" /><el-table-column prop="author" label="作者" width="110" /><el-table-column label="监测状态" width="110"><template #default="scope"><el-tag size="small">{{ statusLabel(scope.row.monitoring_status) }}</el-tag></template></el-table-column><el-table-column prop="repost_site_count" label="转载网站数" width="110" /><el-table-column prop="repost_url_count" label="转载链接数" width="110" /><el-table-column prop="last_searched_at" label="最近检测时间" min-width="170" /><el-table-column label="操作" width="150"><template #default="scope"><el-button link type="primary" :loading="submitting" @click="queueIds([scope.row.id])">立即检测</el-button><el-button link @click="openDetail(scope.row)">查看</el-button></template></el-table-column></el-table></template>
+      <template v-else-if="tab === 'status'"><div class="status-summary"><el-card><b>监测中</b><strong>{{ monitoringStatusCounts.ACTIVE || 0 }}</strong></el-card><el-card><b>已完成</b><strong>{{ monitoringStatusCounts.COMPLETED || 0 }}</strong></el-card><el-card><b>异常</b><strong>{{ monitoringStatusCounts.ERROR || 0 }}</strong></el-card><el-card><b>待监测</b><strong>{{ monitoringStatusCounts.PENDING || 0 }}</strong></el-card></div><el-table :data="rows"><el-table-column prop="published_at" label="发布时间" min-width="150" /><el-table-column prop="title" label="标题" min-width="280" /><el-table-column prop="author" label="作者" /><el-table-column label="状态"><template #default="scope"><el-tag>{{ statusLabel(scope.row.monitoring_status) }}</el-tag></template></el-table-column><el-table-column prop="monitor_started_at" label="监测开始" min-width="160" /><el-table-column prop="monitor_until" label="监测截止" min-width="160" /><el-table-column prop="last_searched_at" label="最近检测" min-width="160" /><el-table-column prop="next_search_at" label="下次检测" min-width="160" /><el-table-column prop="search_run_count" label="搜索次数" /><el-table-column prop="repost_url_count" label="转载链接" /></el-table></template>
+      <template v-else-if="tab === 'results'"><div class="summary"><span>原创文章 {{ summary.article_count }}</span><span>发现转载文章 {{ summary.repost_article_count }}</span><span>转载网站 {{ summary.repost_site_count }}</span><span>转载链接 {{ summary.repost_url_count }}</span></div><section class="trend"><h2>原创文章转载趋势</h2><el-empty v-if="!trend.length" description="当前筛选范围暂无原创文章" /><svg v-else viewBox="0 0 720 180" role="img" aria-label="原创文章转载趋势"><polyline :points="svgPoints" fill="none" stroke="#c90016" stroke-width="3" /><circle v-for="(point,index) in trend" :key="point.published_date" :cx="index * (680 / Math.max(1, trend.length - 1)) + 20" :cy="150 - (point.repost_url_count / Math.max(1, ...trend.map(item => item.repost_url_count))) * 120" r="4"><title>{{ point.published_date }}：{{ point.repost_url_count }} 条链接，{{ point.site_count }} 个网站，{{ point.article_count }} 篇原创</title></circle></svg><div class="trend-labels"><span v-for="point in trend" :key="point.published_date">{{ point.published_date }}</span></div></section><el-table :data="rows"><el-table-column prop="published_at" label="发布时间" min-width="150" /><el-table-column label="栏目"><template #default="scope">{{ scope.row.channel_name || scope.row.section_name || '—' }}</template></el-table-column><el-table-column prop="title" label="原创标题" min-width="300" /><el-table-column prop="repost_site_count" label="转载网站" /><el-table-column prop="repost_url_count" label="转载链接" /><el-table-column label="操作"><template #default="scope"><el-button link type="primary" @click="openDetail(scope.row)">查看详情</el-button></template></el-table-column></el-table></template>
+      <template v-else><section class="export-panel"><h2>导出 Excel</h2><p>导出前会进行一次仅数据库刷新，并使用同一 <code>as_of</code> 快照生成文件；不会调用搜索服务。</p><dl><dt>当前文章</dt><dd>{{ summary.article_count }}</dd><dt>当前转载链接</dt><dd>{{ summary.repost_url_count }}</dd><dt>快照时间</dt><dd>{{ asOf || '—' }}</dd></dl><el-button type="success" :loading="exporting" @click="exportExcel">导出当前筛选结果</el-button></section></template>
+      <el-pagination v-if="total" v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[20,50,100]" layout="total, sizes, prev, pager, next" :total="total" @current-change="load" @size-change="page = 1; load()" />
     </template>
+    <el-drawer v-model="detailOpen" size="76%" :title="detail?.article.title || '监测详情'"><el-skeleton v-if="detailLoading" :rows="6" animated /><template v-else-if="detail"><h3>所有搜索候选（保留，不等同于转载）</h3><el-empty v-if="!detail.candidates.length" description="尚无已保存候选" /><el-table v-else :data="detail.candidates"><el-table-column prop="searched_at" label="搜索时间" min-width="160" /><el-table-column prop="search_phases" label="阶段" min-width="110"><template #default="scope">{{ scope.row.search_phases.join(' / ') }}</template></el-table-column><el-table-column prop="site_name" label="网站" min-width="130" /><el-table-column prop="title" label="候选标题" min-width="240" /><el-table-column label="URL" min-width="300"><template #default="scope"><a :href="scope.row.canonical_url" target="_blank" rel="noopener noreferrer">{{ scope.row.canonical_url }}</a></template></el-table-column><el-table-column prop="similarity_score" label="相似度" /><el-table-column label="分类"><template #default="scope">{{ scope.row.content_relation ? relationLabel(scope.row.content_relation) : '未计入' }}</template></el-table-column><el-table-column prop="classification_reason" label="判定说明" min-width="180" /></el-table><h3>外部转载结果</h3><el-empty v-if="!detail.reposts.length" description="暂无外部转载记录" /><el-table v-else :data="detail.reposts"><el-table-column prop="site_name" label="网站" /><el-table-column prop="result_title" label="标题" min-width="260" /><el-table-column label="URL" min-width="320"><template #default="scope"><a :href="scope.row.canonical_url || scope.row.normalized_url" target="_blank" rel="noopener noreferrer">{{ scope.row.canonical_url || scope.row.normalized_url }}</a></template></el-table-column><el-table-column prop="availability_status" label="链接状态" /><el-table-column prop="first_found_at" label="首次发现" min-width="160" /></el-table><h3>自有分发命中</h3><el-empty v-if="!detail.owned.length" description="暂无已确认的自有分发内容" /><el-table v-else :data="detail.owned"><el-table-column prop="owned_channel_name" label="自有渠道" /><el-table-column prop="result_title" label="标题" min-width="260" /><el-table-column label="URL" min-width="320"><template #default="scope"><a :href="scope.row.canonical_url || scope.row.normalized_url" target="_blank" rel="noopener noreferrer">{{ scope.row.canonical_url || scope.row.normalized_url }}</a></template></el-table-column><el-table-column label="关系"><template #default="scope">{{ relationLabel(scope.row.content_relation) }}</template></el-table-column></el-table><h3>搜索运行记录</h3><el-table :data="detail.runs"><el-table-column prop="created_at" label="时间" min-width="160" /><el-table-column prop="provider" label="搜索服务" /><el-table-column prop="exact_candidate_count" label="EXACT" /><el-table-column prop="broad_candidate_count" label="BROAD" /><el-table-column prop="merged_candidate_count" label="合并候选" /><el-table-column prop="matched_count" label="≥90" /><el-table-column prop="repost_count" label="转载" /><el-table-column prop="owned_count" label="自有" /><el-table-column prop="review_required_count" label="待审核" /><el-table-column prop="error_message" label="异常" min-width="180" /></el-table></template></el-drawer>
   </section>
 </template>
 
 <style scoped>
-.monitoring-panel{display:grid;gap:16px}.monitoring-form{max-width:900px}.monitoring-form .el-checkbox-group,.article-selection{display:flex;flex-direction:column;gap:8px;margin:12px 0}.monitoring-form .el-checkbox{margin-right:0}.run-table{margin-top:16px}
+.monitoring-panel{display:grid;gap:16px}.heading{display:flex;justify-content:space-between;align-items:start;gap:16px}.heading h1{margin:0}.heading p{margin:8px 0 0;color:#6b7280}.filters,.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.filters .el-select{width:145px}.filters .title-filter{width:220px}.status-summary,.summary{display:flex;gap:12px;flex-wrap:wrap}.status-summary .el-card{min-width:135px}.status-summary strong{display:block;font-size:24px;margin-top:6px}.summary span{background:#f3f4f6;padding:8px 12px;border-radius:4px}.trend{border:1px solid #e5e7eb;padding:16px}.trend h2{margin-top:0}.trend svg{width:100%;max-height:220px}.trend circle{fill:#c90016}.trend-labels{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:#6b7280;overflow:hidden}.export-panel{max-width:640px}.export-panel dl{display:grid;grid-template-columns:140px 1fr;gap:10px}.export-panel dt{color:#6b7280}.export-panel dd{margin:0}@media(max-width:900px){.filters .el-select,.filters .title-filter{width:100%}}
 </style>

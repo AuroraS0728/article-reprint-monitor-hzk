@@ -2,10 +2,20 @@ from django.conf import settings
 from django.db import models
 
 
+class ContentRelation(models.TextChoices):
+    REPOST = "REPOST", "外部转载"
+    OWNED = "OWNED", "自有分发"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED", "待审核"
+
+
 class RepostRecord(models.Model):
     article = models.ForeignKey("articles.Article", related_name="repost_records", on_delete=models.PROTECT)
     platform = models.ForeignKey(
-        "platforms.Platform", related_name="repost_records", null=True, blank=True, on_delete=models.PROTECT
+        "platforms.Platform",
+        related_name="repost_records",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
     )
     site_name = models.CharField(max_length=255, blank=True)
     site_domain = models.CharField(max_length=253, blank=True, db_index=True)
@@ -21,6 +31,21 @@ class RepostRecord(models.Model):
     normalized_result_title = models.CharField(max_length=500, blank=True)
     similarity_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     search_provider = models.CharField(max_length=50, blank=True)
+    content_relation = models.CharField(
+        max_length=20,
+        choices=ContentRelation.choices,
+        default=ContentRelation.REPOST,
+        db_index=True,
+    )
+    owned_channel = models.ForeignKey(
+        "sources.OwnedChannel",
+        related_name="discovered_records",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+    )
+    classification_reason = models.CharField(max_length=500, blank=True, default="")
+    classified_at = models.DateTimeField(null=True, blank=True)
     repost_published_at = models.DateTimeField(null=True, blank=True)
     result_published_at = models.DateTimeField(null=True, blank=True)
     first_discovered_at = models.DateTimeField()
@@ -65,8 +90,14 @@ class RepostRecord(models.Model):
     class Meta:
         db_table = "reposts_repost_record"
         constraints = [
-            models.UniqueConstraint(fields=["article", "platform", "normalized_url_hash"], name="uniq_repost_url"),
-            models.UniqueConstraint(fields=["article", "canonical_url_hash"], name="uniq_article_canonical_hash"),
+            models.UniqueConstraint(
+                fields=["article", "platform", "normalized_url_hash"],
+                name="uniq_repost_url",
+            ),
+            models.UniqueConstraint(
+                fields=["article", "canonical_url_hash"],
+                name="uniq_article_canonical_hash",
+            ),
         ]
         ordering = ["repost_published_at", "first_discovered_at", "id"]
 
@@ -78,4 +109,4 @@ class RepostRecord(models.Model):
     def is_historical_repost(self) -> bool:
         """Existence is the repost fact; availability never revokes it."""
 
-        return self.is_valid
+        return self.is_valid and self.content_relation == ContentRelation.REPOST

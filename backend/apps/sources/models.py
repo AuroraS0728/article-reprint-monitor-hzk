@@ -26,6 +26,32 @@ class Source(models.Model):
         return f"{self.code} - {self.name}"
 
 
+class OwnedChannelType(models.TextChoices):
+    OFFICIAL_WEBSITE = "OFFICIAL_WEBSITE", "官方网站"
+    PLATFORM_ACCOUNT = "PLATFORM_ACCOUNT", "平台账号"
+    WECHAT_ACCOUNT = "WECHAT_ACCOUNT", "公众号"
+
+
+class OwnedChannel(models.Model):
+    """A configurable first-party distribution channel, never a scattered domain rule."""
+
+    code = models.CharField(max_length=64, unique=True, validators=[source_code_validator])
+    name = models.CharField(max_length=100, unique=True)
+    channel_type = models.CharField(max_length=32, choices=OwnedChannelType.choices)
+    is_active = models.BooleanField(default=True, db_index=True)
+    match_rules = models.JSONField(default=dict)
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "sources_owned_channel"
+        ordering = ["code"]
+
+    def __str__(self) -> str:
+        return f"{self.code} - {self.name}"
+
+
 class SourceIngestToken(models.Model):
     source = models.ForeignKey(Source, related_name="ingest_tokens", on_delete=models.PROTECT)
     name = models.CharField(max_length=100)
@@ -81,7 +107,9 @@ class ArticleIngestConflict(models.Model):
         db_index=True,
     )
     created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, related_name="created_article_ingest_conflicts", on_delete=models.PROTECT
+        settings.AUTH_USER_MODEL,
+        related_name="created_article_ingest_conflicts",
+        on_delete=models.PROTECT,
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -99,7 +127,10 @@ class ArticleIngestConflict(models.Model):
         db_table = "sources_article_ingest_conflict"
         ordering = ["-created_at", "-id"]
         constraints = [
-            models.UniqueConstraint(fields=["source", "source_item_key"], name="uniq_source_ingest_conflict_item")
+            models.UniqueConstraint(
+                fields=["source", "source_item_key"],
+                name="uniq_source_ingest_conflict_item",
+            )
         ]
 
 
@@ -118,7 +149,13 @@ class SearchRun(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=16, choices=SearchRunStatus.choices, default=SearchRunStatus.PENDING)
     candidate_count = models.PositiveIntegerField(default=0)
+    exact_candidate_count = models.PositiveIntegerField(default=0)
+    broad_candidate_count = models.PositiveIntegerField(default=0)
+    merged_candidate_count = models.PositiveIntegerField(default=0)
     matched_count = models.PositiveIntegerField(default=0)
+    owned_count = models.PositiveIntegerField(default=0)
+    repost_count = models.PositiveIntegerField(default=0)
+    review_required_count = models.PositiveIntegerField(default=0)
     new_repost_count = models.PositiveIntegerField(default=0)
     error_code = models.CharField(max_length=64, blank=True)
     error_message = models.CharField(max_length=500, blank=True)
@@ -150,8 +187,21 @@ class SearchRunCandidate(models.Model):
     canonical_url = models.URLField(max_length=2048)
     canonical_url_hash = models.CharField(max_length=64)
     published_at = models.DateTimeField(null=True, blank=True)
+    search_phases = models.JSONField(default=list)
+    content_relation = models.CharField(max_length=20, blank=True, default="", db_index=True)
+    owned_channel = models.ForeignKey(
+        OwnedChannel,
+        related_name="search_candidates",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+    )
+    classification_reason = models.CharField(max_length=500, blank=True, default="")
+    classified_at = models.DateTimeField(null=True, blank=True)
     disposition = models.CharField(
-        max_length=32, choices=SearchCandidateDisposition.choices, default=SearchCandidateDisposition.PENDING
+        max_length=32,
+        choices=SearchCandidateDisposition.choices,
+        default=SearchCandidateDisposition.PENDING,
     )
     similarity_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     reason_code = models.CharField(max_length=64, blank=True)
@@ -161,5 +211,8 @@ class SearchRunCandidate(models.Model):
         db_table = "sources_search_run_candidate"
         ordering = ["id"]
         constraints = [
-            models.UniqueConstraint(fields=["search_run", "canonical_url_hash"], name="uniq_search_run_candidate_url")
+            models.UniqueConstraint(
+                fields=["search_run", "canonical_url_hash"],
+                name="uniq_search_run_candidate_url",
+            )
         ]

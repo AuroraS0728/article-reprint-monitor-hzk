@@ -7,7 +7,7 @@ from typing import cast
 
 from django.core.files.base import ContentFile
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import Count, Q, QuerySet
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from openpyxl import load_workbook
@@ -26,9 +26,20 @@ from apps.core.permissions import CanOperate
 from apps.core.views import ok
 from apps.reposts.serializers import RepostRecordSerializer
 
-from .models import Article, ArticleImportJob, ArticleIngestMethod, ArticleStatus, ImportStatus
+from .models import (
+    Article,
+    ArticleImportJob,
+    ArticleIngestMethod,
+    ArticleStatus,
+    ImportStatus,
+)
 from .serializers import ArticleImportJobSerializer, ArticleSerializer
-from .services import ArticleDuplicateError, create_approved_duplicate, create_standard_article, normalize_title
+from .services import (
+    ArticleDuplicateError,
+    create_approved_duplicate,
+    create_standard_article,
+    normalize_title,
+)
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_UPLOAD_ROWS = 1000
@@ -37,7 +48,14 @@ MAX_CELL_CHARACTERS = 2048
 ALLOWED_XLSX_MIME_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
-EXPECTED_HEADERS = {"原创文章标题", "原创发布日期", "原创文章链接", "原创发布平台", "作者或部门", "备注"}
+EXPECTED_HEADERS = {
+    "原创文章标题",
+    "原创发布日期",
+    "原创文章链接",
+    "原创发布平台",
+    "作者或部门",
+    "备注",
+}
 
 
 def _has_duplicate_error(errors: object) -> bool:
@@ -56,15 +74,68 @@ class ArticleListCreateView(generics.ListCreateAPIView[Article]):
 
     def get_queryset(self) -> QuerySet[Article]:
         queryset = Article.objects.select_related("created_by", "source").prefetch_related("repost_records__platform")
-        if title := self.request.query_params.get("title"):
+        if title := self.request.query_params.get("title") or self.request.query_params.get("q"):
             queryset = queryset.filter(title__icontains=title)
+        if author := self.request.query_params.get("author"):
+            queryset = queryset.filter(Q(author__icontains=author) | Q(author_department__icontains=author))
         if status_value := self.request.query_params.get("status"):
             queryset = queryset.filter(status=status_value)
-        if published_from := self.request.query_params.get("published_date_from"):
+        if monitoring_status := self.request.query_params.get("monitoring_status"):
+            queryset = queryset.filter(monitoring_status=monitoring_status)
+        if published_from := self.request.query_params.get("published_date_from") or self.request.query_params.get(
+            "published_from"
+        ):
             queryset = queryset.filter(published_date__gte=published_from)
-        if published_to := self.request.query_params.get("published_date_to"):
+        if published_to := self.request.query_params.get("published_date_to") or self.request.query_params.get(
+            "published_to"
+        ):
             queryset = queryset.filter(published_date__lte=published_to)
-        return queryset
+        if channel := self.request.query_params.get("channel"):
+            queryset = queryset.filter(Q(channel_code=channel) | Q(channel_name=channel))
+        if section := self.request.query_params.get("section"):
+            queryset = queryset.filter(Q(section_code=section) | Q(section_name=section))
+        if site_domain := self.request.query_params.get("site_domain"):
+            queryset = queryset.filter(
+                repost_records__is_valid=True,
+                repost_records__content_relation="REPOST",
+                repost_records__site_domain__iexact=site_domain,
+            )
+        has_repost = self.request.query_params.get("has_repost")
+        if has_repost in {"true", "false"}:
+            queryset = queryset.annotate(
+                current_repost_count=Count(
+                    "repost_records",
+                    filter=Q(
+                        repost_records__is_valid=True,
+                        repost_records__content_relation="REPOST",
+                    ),
+                )
+            )
+            queryset = (
+                queryset.filter(current_repost_count__gt=0)
+                if has_repost == "true"
+                else queryset.filter(current_repost_count=0)
+            )
+        return queryset.distinct()
+
+    def list(self, request: Request, *args: object, **kwargs: object) -> Response:
+        """Keep the legacy array response unless a client explicitly asks for paging."""
+        if "page" not in request.query_params and "page_size" not in request.query_params:
+            return cast(Response, super().list(request, *args, **kwargs))
+        try:
+            page = max(int(request.query_params.get("page", "1")), 1)
+            page_size = min(max(int(request.query_params.get("page_size", "20")), 1), 100)
+        except ValueError:
+            raise ValidationError({"page": "分页参数无效。"}) from None
+        queryset = self.filter_queryset(self.get_queryset()).order_by("-published_at", "-published_date", "-id")
+        total = queryset.count()
+        offset = (page - 1) * page_size
+        return ok(
+            {
+                "results": ArticleSerializer(queryset[offset : offset + page_size], many=True).data,
+                "pagination": {"page": page, "page_size": page_size, "total": total},
+            }
+        )
 
     def perform_create(self, serializer: BaseSerializer[Article]) -> None:
         article = cast(Article, serializer.save(created_by=cast(User, self.request.user)))
@@ -119,7 +190,7 @@ class ArticleRepostsView(APIView):
     def get(self, request: Request, pk: int) -> Response:
         article = get_object_or_404(Article, pk=pk)
         reposts = (
-            article.repost_records.filter(is_valid=True)
+            article.repost_records.filter(is_valid=True, content_relation="REPOST")
             .select_related("platform")
             .order_by("first_found_at", "first_discovered_at", "id")
         )
@@ -153,7 +224,10 @@ class ArticleBulkStatusView(APIView):
             request,
             action_type="ARTICLE_BULK_STATUS",
             target_type="article",
-            after_data={"article_ids": [article.id for article in articles], "status": next_status},
+            after_data={
+                "article_ids": [article.id for article in articles],
+                "status": next_status,
+            },
         )
         return ok({"updated_count": len(articles), "status": next_status})
 
@@ -176,7 +250,11 @@ class ArticleBulkPasteView(APIView):
                 serializer = ArticleSerializer(data=item)
                 if not serializer.is_valid():
                     row_status = "duplicate" if _has_duplicate_error(serializer.errors) else "error"
-                    row_error = {"row": index, "status": row_status, "errors": serializer.errors}
+                    row_error = {
+                        "row": index,
+                        "status": row_status,
+                        "errors": serializer.errors,
+                    }
                     errors.append(row_error)
                     results.append(row_error)
                     continue
@@ -184,7 +262,11 @@ class ArticleBulkPasteView(APIView):
                     article = serializer.save(created_by=request.user)
                 except ValidationError as error:
                     row_status = "duplicate" if _has_duplicate_error(error.detail) else "error"
-                    row_error = {"row": index, "status": row_status, "errors": error.detail}
+                    row_error = {
+                        "row": index,
+                        "status": row_status,
+                        "errors": error.detail,
+                    }
                     errors.append(row_error)
                     results.append(row_error)
                     continue
@@ -196,7 +278,10 @@ class ArticleBulkPasteView(APIView):
             target_type="article",
             after_data={"created_count": len(created), "error_count": len(errors)},
         )
-        return ok({"created_ids": created, "errors": errors, "results": results}, status.HTTP_201_CREATED)
+        return ok(
+            {"created_ids": created, "errors": errors, "results": results},
+            status.HTTP_201_CREATED,
+        )
 
 
 class ArticleImportPreviewView(APIView):
@@ -235,14 +320,33 @@ class ArticleImportPreviewView(APIView):
             if not any(cell is not None and str(cell).strip() for cell in row):
                 continue
             if any(cell is not None and len(str(cell)) > MAX_CELL_CHARACTERS for cell in row):
-                preview.append({"row": row_number, "state": "FAILED", "reason": "单元格文本超过长度限制。", "data": {}})
+                preview.append(
+                    {
+                        "row": row_number,
+                        "state": "FAILED",
+                        "reason": "单元格文本超过长度限制。",
+                        "data": {},
+                    }
+                )
                 continue
             if any(isinstance(cell, str) and cell.startswith("=") for cell in row):
-                preview.append({"row": row_number, "state": "FAILED", "reason": "不接受任何公式单元格。", "data": {}})
+                preview.append(
+                    {
+                        "row": row_number,
+                        "state": "FAILED",
+                        "reason": "不接受任何公式单元格。",
+                        "data": {},
+                    }
+                )
                 continue
             title = str(row[positions["原创文章标题"]] or "").strip()
             raw_date = row[positions["原创发布日期"]]
-            result: dict[str, object] = {"row": row_number, "title": title, "state": "FAILED", "reason": ""}
+            result: dict[str, object] = {
+                "row": row_number,
+                "title": title,
+                "state": "FAILED",
+                "reason": "",
+            }
             if not title or not isinstance(raw_date, date):
                 result["reason"] = "标题或发布日期无效。"
             elif Article.objects.filter(normalized_title=normalize_title(title), published_date=raw_date).exists():
@@ -253,11 +357,11 @@ class ArticleImportPreviewView(APIView):
             published_date = raw_date.date() if isinstance(raw_date, datetime) else raw_date
             result["data"] = {
                 "title": title,
-                "published_date": published_date.isoformat() if isinstance(published_date, date) else "",
-                "original_url": str(row[positions["原创文章链接"]] or "") if "原创文章链接" in positions else "",
-                "source_platform": str(row[positions["原创发布平台"]] or "") if "原创发布平台" in positions else "",
-                "author_department": str(row[positions["作者或部门"]] or "") if "作者或部门" in positions else "",
-                "notes": str(row[positions["备注"]] or "") if "备注" in positions else "",
+                "published_date": (published_date.isoformat() if isinstance(published_date, date) else ""),
+                "original_url": (str(row[positions["原创文章链接"]] or "") if "原创文章链接" in positions else ""),
+                "source_platform": (str(row[positions["原创发布平台"]] or "") if "原创发布平台" in positions else ""),
+                "author_department": (str(row[positions["作者或部门"]] or "") if "作者或部门" in positions else ""),
+                "notes": (str(row[positions["备注"]] or "") if "备注" in positions else ""),
             }
             preview.append(result)
         job = ArticleImportJob(
@@ -297,7 +401,13 @@ class ArticleImportConfirmView(APIView):
         actor = cast(User, request.user)
         if confirm_duplicates and not (actor.is_superuser or actor.role == Role.ADMIN):
             return Response(
-                {"success": False, "error": {"code": "PERMISSION_DENIED", "message": "重复项需要管理员确认。"}},
+                {
+                    "success": False,
+                    "error": {
+                        "code": "PERMISSION_DENIED",
+                        "message": "重复项需要管理员确认。",
+                    },
+                },
                 status=403,
             )
         reason_map = request.data.get("duplicate_reasons", {})
@@ -328,7 +438,10 @@ class ArticleImportConfirmView(APIView):
                     item["confirm_errors"] = serializer.errors
                     continue
                 try:
-                    article_data = {**serializer.validated_data, "ingest_method": ArticleIngestMethod.EXCEL}
+                    article_data = {
+                        **serializer.validated_data,
+                        "ingest_method": ArticleIngestMethod.EXCEL,
+                    }
                     if approved_duplicate:
                         article = create_approved_duplicate(
                             data=article_data,
@@ -363,7 +476,14 @@ class ArticleImportConfirmView(APIView):
             job.preview_rows = job.preview_rows
             job.imported_article_ids = imported
             job.completed_at = timezone.now()
-            job.save(update_fields=["status", "preview_rows", "imported_article_ids", "completed_at"])
+            job.save(
+                update_fields=[
+                    "status",
+                    "preview_rows",
+                    "imported_article_ids",
+                    "completed_at",
+                ]
+            )
         record_audit(
             request,
             action_type="ARTICLE_IMPORT_CONFIRM",

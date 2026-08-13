@@ -15,7 +15,9 @@ from .services import purge_expired_source_articles, search_article
 
 
 @shared_task(bind=True, max_retries=3, name="apps.sources.tasks.search_article_reposts")
-def search_article_reposts(self: Any, article_id: int, *, manual: bool = False) -> int | str:
+def search_article_reposts(
+    self: Any, article_id: int, *, manual: bool = False
+) -> int | str:
     lock_client = redis.Redis.from_url(settings.REDIS_URL)
     lock = lock_client.lock(
         f"global-repost-search:article:{article_id}",
@@ -34,7 +36,9 @@ def search_article_reposts(self: Any, article_id: int, *, manual: bool = False) 
         if not manual and (not article.monitor_until or now >= article.monitor_until):
             article.monitoring_status = ArticleMonitoringStatus.COMPLETED
             article.next_search_at = None
-            article.save(update_fields=["monitoring_status", "next_search_at", "updated_at"])
+            article.save(
+                update_fields=["monitoring_status", "next_search_at", "updated_at"]
+            )
             return "COMPLETED"
         run = search_article(article)
         if run.status == "ERROR" and run.error_code in {
@@ -42,7 +46,9 @@ def search_article_reposts(self: Any, article_id: int, *, manual: bool = False) 
             "SEARCH_PROVIDER_UNAVAILABLE",
             "SEARCH_PROVIDER_ERROR",
         }:
-            raise self.retry(countdown=min(60 * (2 ** getattr(self.request, "retries", 0)), 900))
+            raise self.retry(
+                countdown=min(60 * (2 ** getattr(self.request, "retries", 0)), 900)
+            )
         return run.id
     finally:
         try:
@@ -65,7 +71,9 @@ def schedule_due_article_searches() -> int:
             .order_by("next_search_at")
             .values_list("id", flat=True)[: settings.SEARCH_SCHEDULER_BATCH_SIZE]
         )
-        Article.objects.filter(id__in=due_ids).update(next_search_at=now + timedelta(minutes=5))
+        Article.objects.filter(id__in=due_ids).update(
+            next_search_at=now + timedelta(minutes=5)
+        )
     for article_id in due_ids:
         search_article_reposts.delay(article_id)
     return len(due_ids)

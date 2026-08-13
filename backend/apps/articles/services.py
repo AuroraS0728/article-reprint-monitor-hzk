@@ -12,7 +12,14 @@ from apps.accounts.models import Role, User
 
 from .models import Article
 
-TITLE_TRANSLATION: Final[dict[str, str | int | None]] = {"“": '"', "”": '"', "‘": "'", "’": "'", "，": ",", "：": ":"}
+TITLE_TRANSLATION: Final[dict[str, str | int | None]] = {
+    "“": '"',
+    "”": '"',
+    "‘": "'",
+    "’": "'",
+    "，": ",",
+    "：": ":",
+}
 
 
 def normalize_title(value: str, confirmed_suffixes: Iterable[str] = ()) -> str:
@@ -44,7 +51,8 @@ class ArticleDuplicateError(ValueError):
 def is_title_slot_conflict(error: IntegrityError) -> bool:
     message = str(error).lower()
     return "uniq_article_title_date_slot" in message or all(
-        column in message for column in ("normalized_title", "published_date", "duplicate_slot")
+        column in message
+        for column in ("normalized_title", "published_date", "duplicate_slot")
     )
 
 
@@ -78,12 +86,18 @@ def create_standard_article(*, data: Mapping[str, Any], created_by: User) -> Art
             return Article.objects.create(**cast(dict[str, Any], values))
     except IntegrityError as error:
         if is_title_slot_conflict(error):
-            raise ArticleDuplicateError("同日存在相同标准化标题，需管理员确认后创建独立文章。") from error
+            raise ArticleDuplicateError(
+                "同日存在相同标准化标题，需管理员确认后创建独立文章。"
+            ) from error
         raise
 
 
 def create_approved_duplicate(
-    *, data: Mapping[str, Any], approved_by: User, duplicate_reason: str, max_retries: int = 3
+    *,
+    data: Mapping[str, Any],
+    approved_by: User,
+    duplicate_reason: str,
+    max_retries: int = 3,
 ) -> Article:
     reason = duplicate_reason.strip()
     if not reason:
@@ -99,7 +113,9 @@ def create_approved_duplicate(
             with transaction.atomic():
                 existing = list(
                     Article.objects.select_for_update()
-                    .filter(normalized_title=normalized_title, published_date=published_date)
+                    .filter(
+                        normalized_title=normalized_title, published_date=published_date
+                    )
                     .order_by("duplicate_slot", "id")
                 )
                 if not existing:

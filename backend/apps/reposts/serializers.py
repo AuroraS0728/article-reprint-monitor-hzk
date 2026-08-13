@@ -31,6 +31,7 @@ class RepostRecordSerializer(serializers.ModelSerializer[RepostRecord]):
         source="manually_added_by.username", read_only=True, default=None
     )
     invalidated_by_username = serializers.CharField(source="invalidated_by.username", read_only=True, default=None)
+    owned_channel_name = serializers.CharField(source="owned_channel.name", read_only=True, default=None)
 
     class Meta:
         model = RepostRecord
@@ -53,6 +54,11 @@ class RepostRecordSerializer(serializers.ModelSerializer[RepostRecord]):
             "normalized_result_title",
             "similarity_score",
             "search_provider",
+            "content_relation",
+            "owned_channel",
+            "owned_channel_name",
+            "classification_reason",
+            "classified_at",
             "repost_published_at",
             "result_published_at",
             "first_discovered_at",

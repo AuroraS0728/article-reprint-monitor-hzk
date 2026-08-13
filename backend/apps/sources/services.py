@@ -27,7 +27,7 @@ from apps.articles.services import (
 )
 from apps.audit.models import OperationLog
 from apps.core.redaction import safe_error_message
-from apps.reposts.models import RepostRecord
+from apps.reposts.models import ContentRelation, RepostRecord
 from search_providers.base import SearchProvider
 from search_providers.exceptions import SearchProviderError
 from search_providers.registry import configured_search_provider
@@ -36,6 +36,7 @@ from search_providers.types import SearchCandidate
 from .models import (
     ArticleIngestConflict,
     ArticleIngestConflictStatus,
+    OwnedChannel,
     SearchCandidateDisposition,
     SearchRun,
     SearchRunCandidate,
@@ -173,13 +174,24 @@ def _monitoring_fields(published_at: datetime, now: datetime) -> MonitoringLifec
         monitor_started_at=now if active else None,
         monitor_until=monitor_until,
         retention_until=retention_until,
-        monitoring_status=ArticleMonitoringStatus.ACTIVE if active else ArticleMonitoringStatus.COMPLETED,
+        monitoring_status=(ArticleMonitoringStatus.ACTIVE if active else ArticleMonitoringStatus.COMPLETED),
         next_search_at=now if active else None,
     )
 
 
 def _source_article_data(
-    *, source: Source, title: str, author: str, published_at: datetime, canonical_url: str, key: str, now: datetime
+    *,
+    source: Source,
+    title: str,
+    author: str,
+    published_at: datetime,
+    canonical_url: str,
+    key: str,
+    now: datetime,
+    channel_code: str = "",
+    channel_name: str = "",
+    section_code: str = "",
+    section_name: str = "",
 ) -> dict[str, Any]:
     lifecycle = _monitoring_fields(published_at, now)
     return {
@@ -190,6 +202,10 @@ def _source_article_data(
         "original_url": canonical_url,
         "source_platform": source.name,
         "author_department": author,
+        "channel_code": channel_code,
+        "channel_name": channel_name,
+        "section_code": section_code,
+        "section_name": section_name,
         "discovered_at": now,
         "ingest_method": ArticleIngestMethod.SOURCE_API,
         "source": source,
@@ -203,7 +219,17 @@ def _source_article_data(
 
 
 def _update_existing_source_article(
-    *, article: Article, title: str, author: str, published_at: datetime, canonical_url: str, now: datetime
+    *,
+    article: Article,
+    title: str,
+    author: str,
+    published_at: datetime,
+    canonical_url: str,
+    now: datetime,
+    channel_code: str = "",
+    channel_name: str = "",
+    section_code: str = "",
+    section_name: str = "",
 ) -> tuple[bool, bool]:
     updated = False
     changes = {
@@ -214,6 +240,10 @@ def _update_existing_source_article(
         "published_at": published_at,
         "published_date": timezone.localtime(published_at).date(),
         "original_url": canonical_url,
+        "channel_code": channel_code,
+        "channel_name": channel_name,
+        "section_code": section_code,
+        "section_name": section_name,
     }
     title_changed = article.title != title
     update_fields: list[str] = []
@@ -315,7 +345,17 @@ def _create_or_reuse_source_conflict(
 
 @transaction.atomic
 def ingest_source_article(
-    *, source: Source, title: str, author: str, published_at: datetime, original_url: str, created_by: User
+    *,
+    source: Source,
+    title: str,
+    author: str,
+    published_at: datetime,
+    original_url: str,
+    created_by: User,
+    channel_code: str = "",
+    channel_name: str = "",
+    section_code: str = "",
+    section_name: str = "",
 ) -> IngestArticleResult:
     canonical_url = canonicalize_http_url(original_url)
     if not is_url_for_source(source, canonical_url):
@@ -334,6 +374,10 @@ def ingest_source_article(
             published_at=published_at,
             canonical_url=canonical_url,
             now=now,
+            channel_code=channel_code,
+            channel_name=channel_name,
+            section_code=section_code,
+            section_name=section_name,
         )
         return IngestArticleResult(
             article=article,
@@ -396,6 +440,10 @@ def ingest_source_article(
         canonical_url=canonical_url,
         key=key,
         now=now,
+        channel_code=channel_code,
+        channel_name=channel_name,
+        section_code=section_code,
+        section_name=section_name,
     )
     try:
         article = create_standard_article(data=article_data, created_by=created_by)
@@ -409,6 +457,10 @@ def ingest_source_article(
                 published_at=published_at,
                 canonical_url=canonical_url,
                 now=now,
+                channel_code=channel_code,
+                channel_name=channel_name,
+                section_code=section_code,
+                section_name=section_name,
             )
             return IngestArticleResult(
                 article=article,
@@ -443,6 +495,10 @@ def ingest_source_article(
             published_at=published_at,
             canonical_url=canonical_url,
             now=now,
+            channel_code=channel_code,
+            channel_name=channel_name,
+            section_code=section_code,
+            section_name=section_name,
         )
         return IngestArticleResult(
             article=article,
@@ -560,7 +616,14 @@ def _candidate_is_too_early(article: Article, candidate: SearchCandidate) -> boo
 
 @transaction.atomic
 def upsert_global_repost(
-    *, article: Article, candidate: SearchCandidate, match: TitleMatch, found_at: datetime
+    *,
+    article: Article,
+    candidate: SearchCandidate,
+    match: TitleMatch,
+    found_at: datetime,
+    content_relation: str,
+    owned_channel: OwnedChannel | None,
+    classification_reason: str,
 ) -> tuple[RepostRecord, bool]:
     canonical_url = canonicalize_http_url(candidate.url)
     domain = (urlsplit(canonical_url).hostname or "").lower()
@@ -581,6 +644,10 @@ def upsert_global_repost(
         "normalized_result_title": match.normalized_result_title,
         "similarity_score": Decimal(str(round(match.similarity_score, 2))),
         "search_provider": candidate.provider,
+        "content_relation": content_relation,
+        "owned_channel": owned_channel,
+        "classification_reason": classification_reason,
+        "classified_at": found_at,
         "repost_published_at": candidate.published_at,
         "result_published_at": candidate.published_at,
         "first_discovered_at": found_at,
@@ -604,7 +671,11 @@ def upsert_global_repost(
             action_type="REPOST_DISCOVERED",
             target_type="RepostRecord",
             target_id=str(record.id),
-            after_data={"article_id": article.id, "site_domain": domain, "similarity_score": match.similarity_score},
+            after_data={
+                "article_id": article.id,
+                "site_domain": domain,
+                "similarity_score": match.similarity_score,
+            },
         )
         return record, True
     record.last_seen_at = found_at
@@ -618,6 +689,8 @@ def upsert_global_repost(
         record.site_name = candidate.site_name or domain
     if not record.site_domain:
         record.site_domain = domain
+    # A confirmed external repost is historical fact. A later automatic match
+    # must not silently downgrade it; reclassification is an explicit command.
     record.save(
         update_fields=[
             "last_seen_at",
@@ -634,21 +707,141 @@ def upsert_global_repost(
     return record, False
 
 
-def _persist_search_candidate(*, run: SearchRun, canonical_url: str, candidate: SearchCandidate) -> SearchRunCandidate:
+def _persist_search_candidate(
+    *, run: SearchRun, canonical_url: str, candidate: SearchCandidate, phase: str
+) -> SearchRunCandidate:
     """Persist a provider result immediately, before final matching is complete."""
-    record, _ = SearchRunCandidate.objects.update_or_create(
-        search_run=run,
-        canonical_url_hash=sha256(canonical_url.encode("utf-8")).hexdigest(),
-        defaults={
-            "title": candidate.title[:500],
-            "site_name": candidate.site_name[:255],
-            "site_domain": candidate.domain[:253],
-            "raw_url": candidate.url,
-            "canonical_url": canonical_url,
-            "published_at": candidate.published_at,
-        },
-    )
+    candidate_hash = sha256(canonical_url.encode("utf-8")).hexdigest()
+    record = SearchRunCandidate.objects.filter(search_run=run, canonical_url_hash=candidate_hash).first()
+    if record is None:
+        record = SearchRunCandidate.objects.create(
+            search_run=run,
+            canonical_url_hash=candidate_hash,
+            title=candidate.title[:500],
+            site_name=candidate.site_name[:255],
+            site_domain=candidate.domain[:253],
+            raw_url=candidate.url,
+            canonical_url=canonical_url,
+            published_at=candidate.published_at,
+            search_phases=[phase],
+        )
+    elif phase not in record.search_phases:
+        record.search_phases = [*record.search_phases, phase]
+        record.save(update_fields=["search_phases"])
     return record
+
+
+def _metadata_values(candidate: SearchCandidate, key: str) -> set[str]:
+    values: set[str] = set()
+    raw_value = candidate.raw_data.get(key)
+    if isinstance(raw_value, str) and raw_value.strip():
+        values.add(raw_value.strip().casefold())
+    elif isinstance(raw_value, list):
+        values.update(str(item).strip().casefold() for item in raw_value if str(item).strip())
+    return values
+
+
+def _rule_values(rules: dict[str, object], key: str) -> set[str]:
+    value = rules.get(key, [])
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return set()
+    return {str(item).strip().casefold() for item in value if str(item).strip()}
+
+
+def _host_matches(host: str, patterns: set[str], *, exact: bool = False) -> bool:
+    return any(host == pattern or (not exact and host.endswith(f".{pattern}")) for pattern in patterns)
+
+
+def classify_owned_channel(
+    candidate: SearchCandidate, *, channels: list[OwnedChannel] | None = None
+) -> tuple[str, OwnedChannel | None, str]:
+    """Classify title-matched results using configurable, conjunctive channel rules.
+
+    A channel rule can declare broad platform domains plus stronger account/path/metadata
+    checks. A broad platform indication without the stronger checks stays reviewable.
+    """
+
+    host = (candidate.domain or urlsplit(candidate.url).hostname or "").casefold().rstrip(".")
+    path = urlsplit(candidate.url).path.casefold()
+    candidates = channels if channels is not None else list(OwnedChannel.objects.filter(is_active=True))
+    review_result: tuple[str, OwnedChannel, str] | None = None
+    for channel in candidates:
+        rules = channel.match_rules if isinstance(channel.match_rules, dict) else {}
+        domains = _rule_values(rules, "domains")
+        subdomains = _rule_values(rules, "subdomains")
+        platform_domains = _rule_values(rules, "platform_domains")
+        domain_related = _host_matches(host, domains) or _host_matches(host, subdomains, exact=True)
+        platform_related = domain_related or _host_matches(host, platform_domains)
+        if not platform_related:
+            continue
+
+        path_prefixes = _rule_values(rules, "path_prefixes")
+        account_ids = _rule_values(rules, "account_ids")
+        account_names = _rule_values(rules, "account_names")
+        author_names = _rule_values(rules, "author_names")
+        site_names = _rule_values(rules, "site_names")
+        metadata_rules = rules.get("provider_metadata", {})
+        strong_rule_configured = bool(
+            path_prefixes or account_ids or account_names or author_names or site_names or metadata_rules
+        )
+        if path_prefixes and not any(path.startswith(prefix) for prefix in path_prefixes):
+            review_result = review_result or ("REVIEW_REQUIRED", channel, "OWNED_CHANNEL_PATH_UNCONFIRMED")
+            continue
+        if account_ids and not (_metadata_values(candidate, "account_id") & account_ids):
+            review_result = review_result or (
+                "REVIEW_REQUIRED",
+                channel,
+                "OWNED_CHANNEL_ACCOUNT_ID_UNCONFIRMED",
+            )
+            continue
+        account_metadata = _metadata_values(candidate, "account_name") | _metadata_values(candidate, "author")
+        if account_names and not (account_metadata & account_names):
+            review_result = review_result or (
+                "REVIEW_REQUIRED",
+                channel,
+                "OWNED_CHANNEL_ACCOUNT_NAME_UNCONFIRMED",
+            )
+            continue
+        if author_names and not (_metadata_values(candidate, "author") & author_names):
+            review_result = review_result or (
+                "REVIEW_REQUIRED",
+                channel,
+                "OWNED_CHANNEL_AUTHOR_UNCONFIRMED",
+            )
+            continue
+        if site_names and candidate.site_name.strip().casefold() not in site_names:
+            review_result = review_result or (
+                "REVIEW_REQUIRED",
+                channel,
+                "OWNED_CHANNEL_SITE_NAME_UNCONFIRMED",
+            )
+            continue
+        if isinstance(metadata_rules, dict):
+            for key, expected in metadata_rules.items():
+                expected_values = (
+                    {str(item).casefold() for item in expected}
+                    if isinstance(expected, list)
+                    else {str(expected).casefold()}
+                )
+                if not (_metadata_values(candidate, str(key)) & expected_values):
+                    review_result = review_result or (
+                        "REVIEW_REQUIRED",
+                        channel,
+                        "OWNED_CHANNEL_METADATA_UNCONFIRMED",
+                    )
+                    break
+            else:
+                if domain_related and not strong_rule_configured:
+                    return "OWNED", channel, "OWNED_CHANNEL_DOMAIN_MATCH"
+                if platform_related and strong_rule_configured:
+                    return "OWNED", channel, "OWNED_CHANNEL_CONFIGURED_RULE_MATCH"
+        elif domain_related and not strong_rule_configured:
+            return "OWNED", channel, "OWNED_CHANNEL_DOMAIN_MATCH"
+        elif platform_related and strong_rule_configured:
+            return "OWNED", channel, "OWNED_CHANNEL_CONFIGURED_RULE_MATCH"
+    return review_result or ("REPOST", None, "EXTERNAL_SITE")
 
 
 def _classify_search_candidate(
@@ -657,11 +850,27 @@ def _classify_search_candidate(
     disposition: SearchCandidateDisposition,
     reason_code: str,
     similarity_score: Decimal | float | None = None,
+    content_relation: str = "",
+    owned_channel: OwnedChannel | None = None,
 ) -> None:
     record.disposition = disposition
     record.reason_code = reason_code
     record.similarity_score = similarity_score
-    record.save(update_fields=["disposition", "reason_code", "similarity_score"])
+    record.content_relation = content_relation
+    record.owned_channel = owned_channel
+    record.classification_reason = reason_code
+    record.classified_at = timezone.now() if content_relation else None
+    record.save(
+        update_fields=[
+            "disposition",
+            "reason_code",
+            "similarity_score",
+            "content_relation",
+            "owned_channel",
+            "classification_reason",
+            "classified_at",
+        ]
+    )
 
 
 def search_article(article: Article, *, provider: SearchProvider | None = None) -> SearchRun:
@@ -680,45 +889,58 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
         provider_instance = provider_instance or configured_search_provider()
         provider_code = provider_instance.code
         all_candidates: dict[str, SearchCandidate] = {}
-        for query in queries:
-            candidates = provider_instance.search(
-                query,
-                freshness_from=article.published_at,
-                freshness_to=article.monitor_until,
-                limit=settings.SEARCH_RESULT_LIMIT,
-            )
+        stage_errors: list[SearchProviderError] = []
+        stage_counts: dict[str, int] = {"EXACT": 0, "BROAD": 0}
+        for phase, query in (("EXACT", queries[0]), ("BROAD", queries[1])):
+            try:
+                candidates = provider_instance.search(
+                    query,
+                    freshness_from=article.published_at,
+                    freshness_to=article.monitor_until,
+                    limit=settings.SEARCH_RESULT_LIMIT,
+                )
+            except SearchProviderError as error:
+                stage_errors.append(error)
+                continue
+            stage_counts[phase] = len(candidates)
             for candidate in candidates:
                 try:
                     canonical = canonicalize_http_url(candidate.url)
                 except ValueError:
                     continue
-                if canonical in all_candidates:
-                    continue
-                all_candidates[canonical] = candidate
-                _persist_search_candidate(run=run, canonical_url=canonical, candidate=candidate)
+                if canonical not in all_candidates:
+                    all_candidates[canonical] = candidate
+                _persist_search_candidate(run=run, canonical_url=canonical, candidate=candidate, phase=phase)
 
-            # A search provider normally returns one page at a time.  Persisting the
-            # page before issuing the next query makes links inspectable while this
-            # run is still RUNNING instead of only after the final classification.
+            # Persisting each page keeps URLs inspectable while the second stage runs.
             run.candidate_count = len(all_candidates)
-            run.save(update_fields=["candidate_count"])
+            run.exact_candidate_count = stage_counts["EXACT"]
+            run.broad_candidate_count = stage_counts["BROAD"]
+            run.merged_candidate_count = len(all_candidates)
+            run.save(
+                update_fields=[
+                    "candidate_count",
+                    "exact_candidate_count",
+                    "broad_candidate_count",
+                    "merged_candidate_count",
+                ]
+            )
+
+        if len(stage_errors) == 2:
+            raise stage_errors[-1]
 
         matched_count = 0
         new_count = 0
+        owned_count = 0
+        repost_count = 0
+        review_count = 0
+        owned_channels = list(OwnedChannel.objects.filter(is_active=True))
         for canonical, candidate in all_candidates.items():
             candidate_record = SearchRunCandidate.objects.get(
                 search_run=run,
                 canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
             )
-            belongs_to_source = bool(article.source is not None and is_url_for_source(article.source, canonical))
-            if belongs_to_source:
-                _classify_search_candidate(
-                    candidate_record,
-                    disposition=SearchCandidateDisposition.EXCLUDED_SOURCE,
-                    reason_code="SOURCE_DOMAIN",
-                )
-                continue
-            if canonical == article.original_url:
+            if article.original_url and canonical == canonicalize_http_url(article.original_url):
                 _classify_search_candidate(
                     candidate_record,
                     disposition=SearchCandidateDisposition.EXCLUDED_ORIGINAL,
@@ -744,20 +966,59 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
             if not match.matched:
                 continue
             matched_count += 1
-            _, created = upsert_global_repost(article=article, candidate=candidate, match=match, found_at=now)
-            new_count += int(created)
+            relation, owned_channel, classification_reason = classify_owned_channel(candidate, channels=owned_channels)
+            _classify_search_candidate(
+                candidate_record,
+                disposition=SearchCandidateDisposition.MATCHED,
+                reason_code=classification_reason,
+                similarity_score=match.similarity_score,
+                content_relation=relation,
+                owned_channel=owned_channel,
+            )
+            _, created = upsert_global_repost(
+                article=article,
+                candidate=candidate,
+                match=match,
+                found_at=now,
+                content_relation=relation,
+                owned_channel=owned_channel,
+                classification_reason=classification_reason,
+            )
+            if relation == ContentRelation.REPOST:
+                repost_count += 1
+                new_count += int(created)
+            elif relation == ContentRelation.OWNED:
+                owned_count += 1
+            else:
+                review_count += 1
         run.provider = provider_code
         run.status = SearchRunStatus.SUCCESS
         run.candidate_count = len(all_candidates)
+        run.exact_candidate_count = stage_counts["EXACT"]
+        run.broad_candidate_count = stage_counts["BROAD"]
+        run.merged_candidate_count = len(all_candidates)
         run.matched_count = matched_count
+        run.owned_count = owned_count
+        run.repost_count = repost_count
+        run.review_required_count = review_count
         run.new_repost_count = new_count
         run.completed_at = timezone.now()
+        if stage_errors:
+            run.error_code = "PARTIAL_STAGE_FAILURE"
+            run.error_message = "; ".join(f"{error.code}: {safe_error_message(error)}" for error in stage_errors)[:500]
         run.save()
         article.last_searched_at = run.completed_at
         article.next_search_at = _next_search_time(article, run.completed_at)
         if article.next_search_at is None:
             article.monitoring_status = ArticleMonitoringStatus.COMPLETED
-        article.save(update_fields=["last_searched_at", "next_search_at", "monitoring_status", "updated_at"])
+        article.save(
+            update_fields=[
+                "last_searched_at",
+                "next_search_at",
+                "monitoring_status",
+                "updated_at",
+            ]
+        )
     except SearchProviderError as error:
         run.status = SearchRunStatus.ERROR
         run.error_code = error.code
@@ -792,7 +1053,13 @@ def mark_repost_availability(*, record: RepostRecord, status: str, checked_at: d
     before = record.availability_status
     record.availability_status = status
     record.last_availability_checked_at = checked_at or timezone.now()
-    record.save(update_fields=["availability_status", "last_availability_checked_at", "updated_at"])
+    record.save(
+        update_fields=[
+            "availability_status",
+            "last_availability_checked_at",
+            "updated_at",
+        ]
+    )
     if before != status:
         OperationLog.objects.create(
             action_type="REPOST_AVAILABILITY_CHANGED",

@@ -29,6 +29,10 @@ class ArticleSerializer(serializers.ModelSerializer[Article]):
             "source_item_key",
             "published_date",
             "published_at",
+            "channel_code",
+            "channel_name",
+            "section_code",
+            "section_name",
             "author",
             "original_url",
             "source_platform",
@@ -77,12 +81,14 @@ class ArticleSerializer(serializers.ModelSerializer[Article]):
     def get_repost_site_count(self, instance: Article) -> int:
         domains = {
             record.site_domain or (record.platform.name if record.platform is not None else "")
-            for record in instance.repost_records.filter(is_valid=True).select_related("platform")
+            for record in instance.repost_records.filter(is_valid=True, content_relation="REPOST").select_related(
+                "platform"
+            )
         }
         return len(domains - {""})
 
     def get_repost_url_count(self, instance: Article) -> int:
-        return instance.repost_records.filter(is_valid=True).count()
+        return instance.repost_records.filter(is_valid=True, content_relation="REPOST").count()
 
     def validate_title(self, value: str) -> str:
         if not value.strip():

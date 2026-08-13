@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import ArticleIngestConflict, ArticleIngestConflictStatus, SearchRunCandidate
+from .models import (
+    ArticleIngestConflict,
+    ArticleIngestConflictStatus,
+    SearchRunCandidate,
+)
 
 
 class SourceArticleIngestSerializer(serializers.Serializer[object]):
@@ -10,6 +14,10 @@ class SourceArticleIngestSerializer(serializers.Serializer[object]):
     author = serializers.CharField(max_length=255, trim_whitespace=True)
     published_at = serializers.DateTimeField()
     original_url = serializers.URLField(max_length=2048)
+    channel_code = serializers.CharField(max_length=64, required=False, allow_blank=True, trim_whitespace=True)
+    channel_name = serializers.CharField(max_length=100, required=False, allow_blank=True, trim_whitespace=True)
+    section_code = serializers.CharField(max_length=64, required=False, allow_blank=True, trim_whitespace=True)
+    section_name = serializers.CharField(max_length=100, required=False, allow_blank=True, trim_whitespace=True)
 
     def validate_title(self, value: str) -> str:
         if not value.strip():
@@ -23,15 +31,26 @@ class SourceArticleIngestSerializer(serializers.Serializer[object]):
 
 
 class ManualGlobalSearchSerializer(serializers.Serializer[object]):
+    selection_mode = serializers.ChoiceField(choices=["IDS", "FILTER"], required=False, default="IDS")
     article_ids = serializers.ListField(
         child=serializers.IntegerField(min_value=1),
         min_length=1,
-        max_length=50,
+        max_length=500,
         allow_empty=False,
+        required=False,
     )
+    filters = serializers.DictField(required=False)
 
     def validate_article_ids(self, value: list[int]) -> list[int]:
         return list(dict.fromkeys(value))
+
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        mode = attrs.get("selection_mode", "IDS")
+        if mode == "IDS" and not attrs.get("article_ids"):
+            raise serializers.ValidationError({"article_ids": "请选择至少一篇文章。"})
+        if mode == "FILTER" and not attrs.get("filters"):
+            raise serializers.ValidationError({"filters": "按筛选范围检测需要筛选条件。"})
+        return attrs
 
 
 class SearchRunCandidateSerializer(serializers.ModelSerializer[SearchRunCandidate]):
@@ -45,6 +64,11 @@ class SearchRunCandidateSerializer(serializers.ModelSerializer[SearchRunCandidat
             "raw_url",
             "canonical_url",
             "published_at",
+            "search_phases",
+            "content_relation",
+            "owned_channel",
+            "classification_reason",
+            "classified_at",
             "disposition",
             "similarity_score",
             "reason_code",

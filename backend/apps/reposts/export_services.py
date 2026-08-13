@@ -17,7 +17,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from apps.articles.models import Article, ArticleMonitoringStatus
 
-from .models import RepostRecord
+from .models import ContentRelation, RepostRecord
 
 INVALID_SHEET_CHARACTERS = re.compile(r"[:\\/?*\[\]]")
 AVAILABILITY_LABELS = {
@@ -40,6 +40,9 @@ class GlobalExportFilters:
     monitoring_status: str = ""
     site_domain: str = ""
     has_repost: bool | None = None
+    channel: str = ""
+    section: str = ""
+    q: str = ""
 
 
 def safe_excel_text(value: object) -> str:
@@ -68,7 +71,11 @@ def sanitize_excel_sheet_name(value: str, used_names: set[str]) -> str:
 
 def _historical_records(as_of: datetime) -> QuerySet[RepostRecord]:
     return (
-        RepostRecord.objects.filter(is_valid=True, created_at__lte=as_of)
+        RepostRecord.objects.filter(
+            is_valid=True,
+            content_relation=ContentRelation.REPOST,
+            created_at__lte=as_of,
+        )
         .select_related("platform", "article")
         .order_by("first_found_at", "first_discovered_at", "id")
     )
@@ -79,6 +86,7 @@ def filtered_articles(filters: GlobalExportFilters, *, as_of: datetime) -> Query
     historical_reposts = RepostRecord.objects.filter(
         article_id=OuterRef("pk"),
         is_valid=True,
+        content_relation=ContentRelation.REPOST,
         created_at__lte=as_of,
     )
     if filters.start_date:
@@ -91,6 +99,12 @@ def filtered_articles(filters: GlobalExportFilters, *, as_of: datetime) -> Query
         queryset = queryset.filter(Q(author__icontains=filters.author) | Q(author_department__icontains=filters.author))
     if filters.monitoring_status:
         queryset = queryset.filter(monitoring_status=filters.monitoring_status)
+    if filters.channel:
+        queryset = queryset.filter(Q(channel_code=filters.channel) | Q(channel_name=filters.channel))
+    if filters.section:
+        queryset = queryset.filter(Q(section_code=filters.section) | Q(section_name=filters.section))
+    if filters.q:
+        queryset = queryset.filter(title__icontains=filters.q)
     if filters.site_domain:
         queryset = queryset.annotate(
             matches_site_as_of=Exists(historical_reposts.filter(site_domain__iexact=filters.site_domain))
@@ -142,10 +156,12 @@ def _format_sheet(sheet: Worksheet, widths: Iterable[int]) -> None:
 
 
 @transaction.atomic
-def build_global_repost_workbook(filters: GlobalExportFilters) -> tuple[bytes, datetime]:
+def build_global_repost_workbook(
+    filters: GlobalExportFilters, *, export_as_of: datetime | None = None
+) -> tuple[bytes, datetime]:
     """Build one read-only, point-in-time workbook without scheduling searches."""
 
-    export_as_of = timezone.now()
+    export_as_of = export_as_of or timezone.now()
     records_prefetch = Prefetch(
         "repost_records",
         queryset=_historical_records(export_as_of),
@@ -238,7 +254,7 @@ def build_global_repost_workbook(filters: GlobalExportFilters) -> tuple[bytes, d
                     safe_excel_text(article.author or article.author_department),
                     "",
                     safe_excel_text(record.result_title or record.repost_title),
-                    float(record.similarity_score) if record.similarity_score is not None else "",
+                    (float(record.similarity_score) if record.similarity_score is not None else ""),
                     excel_datetime(record.first_found_at or record.first_discovered_at),
                     excel_datetime(record.last_seen_at or record.last_checked_at),
                     AVAILABILITY_LABELS.get(record.availability_status, "未知"),
@@ -251,7 +267,16 @@ def build_global_repost_workbook(filters: GlobalExportFilters) -> tuple[bytes, d
         _format_sheet(site_sheet, [48, 48, 19, 16, 45, 48, 14, 19, 19, 14])
 
     total_sheet = workbook.create_sheet("总统计")
-    total_sheet.append(["标题", "作者", "发布时间", "转载网站数", "转载链接数", *[site_names[d] for d in domains]])
+    total_sheet.append(
+        [
+            "标题",
+            "作者",
+            "发布时间",
+            "转载网站数",
+            "转载链接数",
+            *[site_names[d] for d in domains],
+        ]
+    )
     for article in articles:
         article_records = [record for record in records if record.article_id == article.id]
         found_domains = {_record_domain(record) for record in article_records}
@@ -275,7 +300,10 @@ def build_global_repost_workbook(filters: GlobalExportFilters) -> tuple[bytes, d
         ("至少发现转载的文章数", len(articles_with_reposts)),
         ("暂无转载文章数", len(articles) - len(articles_with_reposts)),
         ("不同转载网站总数", len(domains)),
-        ("转载链接总数", len({(record.article_id, _record_url(record)) for record in records})),
+        (
+            "转载链接总数",
+            len({(record.article_id, _record_url(record)) for record in records}),
+        ),
     ]:
         summary_sheet.append([label, value, excel_datetime(export_as_of)])
     summary_sheet.append([])
