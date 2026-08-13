@@ -2,11 +2,64 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from search_providers.exceptions import SearchProviderError
+
 from .models import (
     ArticleIngestConflict,
     ArticleIngestConflictStatus,
+    SearchProviderConfiguration,
     SearchRunCandidate,
 )
+
+
+class SearchProviderConfigurationSerializer(serializers.ModelSerializer[SearchProviderConfiguration]):
+    class Meta:
+        model = SearchProviderConfiguration
+        fields = [
+            "id",
+            "code",
+            "name",
+            "enabled",
+            "priority",
+            "last_success_at",
+            "last_failure_at",
+            "consecutive_failures",
+            "last_failure_code",
+            "last_failure_message",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "last_success_at",
+            "last_failure_at",
+            "consecutive_failures",
+            "last_failure_code",
+            "last_failure_message",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_code(self, value: str) -> str:
+        from search_providers.registry import SUPPORTED_PROVIDER_CODES
+
+        code = value.strip().lower()
+        if code not in SUPPORTED_PROVIDER_CODES:
+            raise serializers.ValidationError("仅允许已实现且可审计的正式搜索来源。")
+        return code
+
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        from search_providers.registry import search_provider_for_code
+
+        enabled = bool(attrs.get("enabled", getattr(self.instance, "enabled", False)))
+        code = str(attrs.get("code", getattr(self.instance, "code", "")))
+        if enabled:
+            try:
+                search_provider_for_code(code)
+            except SearchProviderError as error:
+                raise serializers.ValidationError(
+                    {"enabled": "来源密钥未在服务器安全配置中就绪，不能启用。"}
+                ) from error
+        return attrs
 
 
 class SourceArticleIngestSerializer(serializers.Serializer[object]):
@@ -65,6 +118,7 @@ class SearchRunCandidateSerializer(serializers.ModelSerializer[SearchRunCandidat
             "canonical_url",
             "published_at",
             "search_phases",
+            "provider_codes",
             "content_relation",
             "owned_channel",
             "classification_reason",

@@ -6,6 +6,7 @@ import MonitoringPanel from "./MonitoringPanel.vue";
 import ReadingPanel from "./ReadingPanel.vue";
 import OperationsPanel from "./OperationsPanel.vue";
 import ReportsPanel from "./ReportsPanel.vue";
+import SearchProvidersPanel from "./SearchProvidersPanel.vue";
 
 type Role = "ADMIN" | "OPERATOR" | "VIEWER";
 type User = { id: number; username: string; email: string; role: Role; must_change_password: boolean; is_active: boolean };
@@ -130,6 +131,7 @@ onMounted(refresh);
           <el-menu-item v-if="canOperate" index="manual-reposts">人工补录</el-menu-item>
           <el-menu-item index="reports">报表中心</el-menu-item>
           <el-menu-item index="platforms">平台维护</el-menu-item>
+          <el-menu-item v-if="isAdmin" index="search-providers">搜索来源</el-menu-item>
           <el-menu-item v-if="isAdmin" index="users">用户与角色</el-menu-item>
           <el-menu-item v-if="isAdmin" index="audit">审计日志</el-menu-item>
           <el-menu-item v-if="isAdmin" index="operations">运行维护</el-menu-item>
@@ -141,6 +143,7 @@ onMounted(refresh);
         <ReadingPanel v-if="page === 'reading'" />
         <OperationsPanel v-if="page === 'manual-reposts' || page === 'operations'" :is-admin="isAdmin" :can-operate="canOperate" />
         <ReportsPanel v-if="page === 'reports'" :is-admin="isAdmin" />
+        <SearchProvidersPanel v-if="page === 'search-providers' && isAdmin" />
       <template v-if="page === 'articles'">
         <h1>原创文章</h1>
         <p class="note">默认仅显示近 7 日文章；筛选、分页和数据均来自 Django API。</p>

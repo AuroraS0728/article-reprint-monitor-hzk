@@ -8,6 +8,10 @@ source_code_validator = RegexValidator(
     regex=r"^[A-Z0-9_]+$",
     message="来源代码只能包含大写英文字母、数字和下划线。",
 )
+search_provider_code_validator = RegexValidator(
+    regex=r"^[a-z0-9_]+$",
+    message="搜索来源代码只能包含小写英文字母、数字和下划线。",
+)
 
 
 class Source(models.Model):
@@ -50,6 +54,29 @@ class OwnedChannel(models.Model):
 
     def __str__(self) -> str:
         return f"{self.code} - {self.name}"
+
+
+class SearchProviderConfiguration(models.Model):
+    """Database-managed provider order. API credentials stay in server secrets."""
+
+    code = models.CharField(max_length=50, unique=True, validators=[search_provider_code_validator])
+    name = models.CharField(max_length=100)
+    enabled = models.BooleanField(default=False, db_index=True)
+    priority = models.PositiveSmallIntegerField(default=100)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    last_failure_at = models.DateTimeField(null=True, blank=True)
+    consecutive_failures = models.PositiveIntegerField(default=0)
+    last_failure_code = models.CharField(max_length=64, blank=True)
+    last_failure_message = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "sources_search_provider_configuration"
+        ordering = ["priority", "code"]
+
+    def __str__(self) -> str:
+        return f"{self.priority} - {self.code}"
 
 
 class SourceIngestToken(models.Model):
@@ -189,6 +216,7 @@ class SearchRunCandidate(models.Model):
     canonical_url_hash = models.CharField(max_length=64)
     published_at = models.DateTimeField(null=True, blank=True)
     search_phases = models.JSONField(default=list)
+    provider_codes = models.JSONField(default=list)
     content_relation = models.CharField(max_length=20, blank=True, default="", db_index=True)
     owned_channel = models.ForeignKey(
         OwnedChannel,

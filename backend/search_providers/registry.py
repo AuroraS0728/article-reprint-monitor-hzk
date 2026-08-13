@@ -7,11 +7,13 @@ from .exceptions import SearchProviderNotConfigured
 from .providers.brave import BraveSearchProvider
 from .providers.tencent_wsa import TencentWsaSearchProvider
 
+SUPPORTED_PROVIDER_CODES = ("tencent_wsa", "brave")
 
-def configured_search_provider() -> SearchProvider:
-    provider = settings.SEARCH_PROVIDER.strip().lower()
-    if not provider:
-        raise SearchProviderNotConfigured("未配置 SEARCH_PROVIDER。")
+
+def search_provider_for_code(provider_code: str) -> SearchProvider:
+    """Return only a provider with a real, configured official API credential."""
+
+    provider = provider_code.strip().lower()
     if provider == "brave":
         if not settings.BRAVE_SEARCH_API_KEY:
             raise SearchProviderNotConfigured("未配置 BRAVE_SEARCH_API_KEY。")
@@ -21,3 +23,10 @@ def configured_search_provider() -> SearchProvider:
             raise SearchProviderNotConfigured("Tencent Cloud WSA API key is not configured.")
         return TencentWsaSearchProvider()
     raise SearchProviderNotConfigured(f"不支持的 SEARCH_PROVIDER：{provider}")
+
+
+def configured_search_provider() -> SearchProvider:
+    provider = settings.SEARCH_PROVIDER.strip().lower()
+    if not provider:
+        raise SearchProviderNotConfigured("未配置 SEARCH_PROVIDER。")
+    return search_provider_for_code(provider)

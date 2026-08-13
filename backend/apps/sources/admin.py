@@ -4,6 +4,7 @@ from django.http import HttpRequest
 from .models import (
     ArticleIngestConflict,
     OwnedChannel,
+    SearchProviderConfiguration,
     SearchRun,
     Source,
     SourceIngestToken,
@@ -55,6 +56,22 @@ class SearchRunAdmin(admin.ModelAdmin):
         "created_at",
     )
     readonly_fields = ("created_at",)
+
+
+@admin.register(SearchProviderConfiguration)
+class SearchProviderConfigurationAdmin(admin.ModelAdmin):
+    list_display = ("code", "name", "enabled", "priority", "last_success_at", "consecutive_failures")
+    list_filter = ("enabled",)
+    search_fields = ("code", "name")
+    readonly_fields = (
+        "last_success_at",
+        "last_failure_at",
+        "consecutive_failures",
+        "last_failure_code",
+        "last_failure_message",
+        "created_at",
+        "updated_at",
+    )
 
 
 @admin.register(OwnedChannel)

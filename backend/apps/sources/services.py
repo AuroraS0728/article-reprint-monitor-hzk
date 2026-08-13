@@ -30,7 +30,7 @@ from apps.core.redaction import safe_error_message
 from apps.reposts.models import ContentRelation, RepostRecord
 from search_providers.base import SearchProvider
 from search_providers.exceptions import SearchProviderError
-from search_providers.registry import configured_search_provider
+from search_providers.registry import configured_search_provider, search_provider_for_code
 from search_providers.types import SearchCandidate
 
 from .models import (
@@ -38,6 +38,7 @@ from .models import (
     ArticleIngestConflictStatus,
     OwnedChannel,
     SearchCandidateDisposition,
+    SearchProviderConfiguration,
     SearchRun,
     SearchRunCandidate,
     SearchRunStatus,
@@ -712,6 +713,7 @@ def _persist_search_candidate(
 ) -> SearchRunCandidate:
     """Persist a provider result immediately, before final matching is complete."""
     candidate_hash = sha256(canonical_url.encode("utf-8")).hexdigest()
+    provider_code = candidate.provider.strip().lower()
     record = SearchRunCandidate.objects.filter(search_run=run, canonical_url_hash=candidate_hash).first()
     if record is None:
         record = SearchRunCandidate.objects.create(
@@ -724,10 +726,18 @@ def _persist_search_candidate(
             canonical_url=canonical_url,
             published_at=candidate.published_at,
             search_phases=[phase],
+            provider_codes=[provider_code] if provider_code else [],
         )
-    elif phase not in record.search_phases:
-        record.search_phases = [*record.search_phases, phase]
-        record.save(update_fields=["search_phases"])
+    else:
+        update_fields: list[str] = []
+        if phase not in record.search_phases:
+            record.search_phases = [*record.search_phases, phase]
+            update_fields.append("search_phases")
+        if provider_code and provider_code not in record.provider_codes:
+            record.provider_codes = [*record.provider_codes, provider_code]
+            update_fields.append("provider_codes")
+        if update_fields:
+            record.save(update_fields=update_fields)
     return record
 
 
@@ -1024,6 +1034,60 @@ def review_search_candidate(
     return candidate, record
 
 
+def _enabled_provider_instances() -> list[tuple[str, SearchProvider]]:
+    """Resolve enabled database providers in priority order without exposing keys."""
+
+    configurations = list(SearchProviderConfiguration.objects.filter(enabled=True).order_by("priority", "code"))
+    if not configurations:
+        provider = configured_search_provider()
+        return [(provider.code, provider)]
+    providers: list[tuple[str, SearchProvider]] = []
+    for configuration in configurations:
+        try:
+            providers.append((configuration.code, search_provider_for_code(configuration.code)))
+        except SearchProviderError as error:
+            _mark_provider_failure(configuration, error)
+    if not providers:
+        raise SearchProviderError("没有可用的已启用搜索来源。")
+    return providers
+
+
+def _mark_provider_success(configuration: SearchProviderConfiguration) -> None:
+    configuration.last_success_at = timezone.now()
+    configuration.consecutive_failures = 0
+    configuration.last_failure_code = ""
+    configuration.last_failure_message = ""
+    configuration.save(
+        update_fields=[
+            "last_success_at",
+            "consecutive_failures",
+            "last_failure_code",
+            "last_failure_message",
+            "updated_at",
+        ]
+    )
+
+
+def _mark_provider_failure(configuration: SearchProviderConfiguration, error: SearchProviderError) -> None:
+    configuration.last_failure_at = timezone.now()
+    configuration.consecutive_failures += 1
+    configuration.last_failure_code = error.code
+    configuration.last_failure_message = safe_error_message(error)
+    configuration.save(
+        update_fields=[
+            "last_failure_at",
+            "consecutive_failures",
+            "last_failure_code",
+            "last_failure_message",
+            "updated_at",
+        ]
+    )
+
+
+def _configured_provider_row(provider_code: str) -> SearchProviderConfiguration | None:
+    return SearchProviderConfiguration.objects.filter(code=provider_code, enabled=True).first()
+
+
 def search_article(article: Article, *, provider: SearchProvider | None = None) -> SearchRun:
     provider_instance = provider
     provider_code = getattr(provider_instance, "code", settings.SEARCH_PROVIDER or "unconfigured")
@@ -1037,47 +1101,80 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
     )
     now = timezone.now()
     try:
-        provider_instance = provider_instance or configured_search_provider()
-        provider_code = provider_instance.code
+        providers = (
+            [(provider_instance.code, provider_instance)]
+            if provider_instance is not None
+            else _enabled_provider_instances()
+        )
+        provider_code = ",".join(configured_code for configured_code, _ in providers)
         all_candidates: dict[str, SearchCandidate] = {}
         stage_errors: list[SearchProviderError] = []
         stage_counts: dict[str, int] = {"EXACT": 0, "BROAD": 0}
-        for phase, query in (("EXACT", queries[0]), ("BROAD", queries[1])):
-            try:
-                candidates = provider_instance.search(
-                    query,
-                    freshness_from=article.published_at,
-                    freshness_to=article.monitor_until,
-                    limit=settings.SEARCH_RESULT_LIMIT,
-                )
-            except SearchProviderError as error:
-                stage_errors.append(error)
-                continue
-            stage_counts[phase] = len(candidates)
-            for candidate in candidates:
+        successful_provider_calls = 0
+        for configured_code, selected_provider in providers:
+            configuration = _configured_provider_row(configured_code)
+            provider_had_success = False
+            for phase, query in (("EXACT", queries[0]), ("BROAD", queries[1])):
                 try:
-                    canonical = canonicalize_http_url(candidate.url)
-                except ValueError:
+                    candidates = selected_provider.search(
+                        query,
+                        freshness_from=article.published_at,
+                        freshness_to=article.monitor_until,
+                        limit=settings.SEARCH_RESULT_LIMIT,
+                    )
+                except SearchProviderError as error:
+                    stage_errors.append(error)
+                    # Test-injected and legacy single providers retain the two-stage contract:
+                    # an exact query failure must not suppress its broad query. For configured
+                    # multi-source searches, continue with the next source to limit a failed
+                    # provider's impact on the full scheduled run.
+                    if provider_instance is None:
+                        break
                     continue
-                if canonical not in all_candidates:
-                    all_candidates[canonical] = candidate
-                _persist_search_candidate(run=run, canonical_url=canonical, candidate=candidate, phase=phase)
+                provider_had_success = True
+                successful_provider_calls += 1
+                stage_counts[phase] += len(candidates)
+                for candidate in candidates:
+                    if not candidate.provider:
+                        candidate = SearchCandidate(
+                            title=candidate.title,
+                            url=candidate.url,
+                            snippet=candidate.snippet,
+                            display_url=candidate.display_url,
+                            domain=candidate.domain,
+                            published_at=candidate.published_at,
+                            provider=configured_code,
+                            site_name=candidate.site_name,
+                            raw_data=candidate.raw_data,
+                        )
+                    try:
+                        canonical = canonicalize_http_url(candidate.url)
+                    except ValueError:
+                        continue
+                    if canonical not in all_candidates:
+                        all_candidates[canonical] = candidate
+                    _persist_search_candidate(run=run, canonical_url=canonical, candidate=candidate, phase=phase)
 
-            # Persisting each page keeps URLs inspectable while the second stage runs.
-            run.candidate_count = len(all_candidates)
-            run.exact_candidate_count = stage_counts["EXACT"]
-            run.broad_candidate_count = stage_counts["BROAD"]
-            run.merged_candidate_count = len(all_candidates)
-            run.save(
-                update_fields=[
-                    "candidate_count",
-                    "exact_candidate_count",
-                    "broad_candidate_count",
-                    "merged_candidate_count",
-                ]
-            )
+                # Persist each provider response so URLs remain visible while the next source runs.
+                run.candidate_count = len(all_candidates)
+                run.exact_candidate_count = stage_counts["EXACT"]
+                run.broad_candidate_count = stage_counts["BROAD"]
+                run.merged_candidate_count = len(all_candidates)
+                run.save(
+                    update_fields=[
+                        "candidate_count",
+                        "exact_candidate_count",
+                        "broad_candidate_count",
+                        "merged_candidate_count",
+                    ]
+                )
+            if configuration is not None:
+                if provider_had_success:
+                    _mark_provider_success(configuration)
+                elif stage_errors:
+                    _mark_provider_failure(configuration, stage_errors[-1])
 
-        if len(stage_errors) == 2:
+        if successful_provider_calls == 0:
             raise stage_errors[-1]
 
         matched_count = 0

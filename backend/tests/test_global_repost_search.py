@@ -33,6 +33,7 @@ from apps.reposts.query_services import (
 from apps.sources.models import (
     OwnedChannel,
     SearchCandidateDisposition,
+    SearchProviderConfiguration,
     SearchRun,
     SearchRunCandidate,
     SearchRunStatus,
@@ -68,6 +69,11 @@ class ErrorProvider:
 
     def search(self, query: str, **kwargs: object) -> list[SearchCandidate]:
         raise SearchProviderRateLimited("rate limited")
+
+
+class NamedStaticProvider(StaticProvider):
+    def __init__(self, code: str, candidates: list[SearchCandidate]) -> None:
+        super().__init__(candidates=candidates, code=code)
 
 
 class PerStageProvider:
@@ -500,6 +506,84 @@ def test_broad_stage_can_succeed_after_exact_stage_failure(source: Source, opera
     assert run.status == SearchRunStatus.SUCCESS
     assert run.error_code == "PARTIAL_STAGE_FAILURE"
     assert run.repost_count == 1
+
+
+@pytest.mark.django_db
+def test_enabled_search_providers_run_in_priority_order_and_fall_back_after_failure(
+    source: Source, operator: User
+) -> None:
+    article = create_source_article(source=source, operator=operator)
+    first = SearchProviderConfiguration.objects.create(code="tencent_wsa", name="First", enabled=True, priority=10)
+    second = SearchProviderConfiguration.objects.create(code="brave", name="Second", enabled=True, priority=20)
+    fallback = NamedStaticProvider(
+        "brave",
+        [SearchCandidate(title=article.title, url="https://fallback.example.com/repost", site_name="Fallback")],
+    )
+    with patch(
+        "apps.sources.services.search_provider_for_code",
+        side_effect=[ErrorProvider(), fallback],
+    ):
+        run = search_article(article)
+
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert run.status == SearchRunStatus.SUCCESS
+    assert run.provider == "tencent_wsa,brave"
+    candidate = SearchRunCandidate.objects.get(search_run=run, canonical_url="https://fallback.example.com/repost")
+    assert candidate.provider_codes == ["brave"]
+    assert first.consecutive_failures == 1
+    assert first.last_failure_code == "SEARCH_PROVIDER_RATE_LIMITED"
+    assert second.consecutive_failures == 0
+    assert second.last_success_at is not None
+
+
+@pytest.mark.django_db
+def test_candidate_keeps_all_provider_codes_when_the_same_url_is_returned(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    first = SearchProviderConfiguration.objects.create(code="tencent_wsa", name="First", enabled=True, priority=10)
+    second = SearchProviderConfiguration.objects.create(code="brave", name="Second", enabled=True, priority=20)
+    shared_url = "https://same.example.com/repost"
+    with patch(
+        "apps.sources.services.search_provider_for_code",
+        side_effect=[
+            NamedStaticProvider("tencent_wsa", [SearchCandidate(title=article.title, url=shared_url)]),
+            NamedStaticProvider("brave", [SearchCandidate(title=article.title, url=shared_url)]),
+        ],
+    ):
+        run = search_article(article)
+
+    candidate = SearchRunCandidate.objects.get(search_run=run, canonical_url=shared_url)
+    assert candidate.provider_codes == ["tencent_wsa", "brave"]
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert first.last_success_at is not None
+    assert second.last_success_at is not None
+
+
+@pytest.mark.django_db
+def test_search_provider_configuration_api_requires_admin_and_configured_secret(source: Source, operator: User) -> None:
+    client = APIClient()
+    client.force_authenticate(operator)
+    forbidden = client.get("/api/v1/search-providers")
+    assert forbidden.status_code == 403
+
+    admin = User.objects.create_user(username="search-admin", password="A-valid-password-123", role="ADMIN")
+    client.force_authenticate(admin)
+    with override_settings(BRAVE_SEARCH_API_KEY=""):
+        rejected = client.post(
+            "/api/v1/search-providers",
+            {"code": "brave", "name": "Brave", "enabled": True, "priority": 10},
+            format="json",
+        )
+    assert rejected.status_code == 400
+    with override_settings(TENCENTCLOUD_WSA_APIKEY="test-key"):
+        created = client.post(
+            "/api/v1/search-providers",
+            {"code": "tencent_wsa", "name": "腾讯云联网搜索", "enabled": True, "priority": 10},
+            format="json",
+        )
+    assert created.status_code == 201
+    assert OperationLog.objects.filter(action_type="SEARCH_PROVIDER_CONFIGURATION_CREATE").exists()
 
 
 @pytest.mark.django_db

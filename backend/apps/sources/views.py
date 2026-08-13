@@ -22,6 +22,7 @@ from .authentication import SourceTokenAuthentication
 from .models import (
     ArticleIngestConflict,
     ArticleIngestConflictStatus,
+    SearchProviderConfiguration,
     SearchRun,
     SearchRunCandidate,
     SourceIngestToken,
@@ -30,6 +31,7 @@ from .serializers import (
     ArticleIngestConflictReviewSerializer,
     ArticleIngestConflictSerializer,
     ManualGlobalSearchSerializer,
+    SearchProviderConfigurationSerializer,
     SearchRunCandidateReviewSerializer,
     SearchRunCandidateSerializer,
     SourceArticleIngestSerializer,
@@ -41,6 +43,51 @@ from .services import (
     review_search_candidate,
 )
 from .tasks import search_article_reposts
+
+
+class SearchProviderConfigurationListCreateView(APIView):
+    """Administrator-only source configuration; credentials are never API data."""
+
+    permission_classes = [IsAdministrator]
+    serializer_class = SearchProviderConfigurationSerializer
+
+    def get(self, request: Request) -> Response:
+        configurations = SearchProviderConfiguration.objects.all()
+        return ok(SearchProviderConfigurationSerializer(configurations, many=True).data)
+
+    def post(self, request: Request) -> Response:
+        serializer = SearchProviderConfigurationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        configuration = serializer.save()
+        record_audit(
+            request,
+            action_type="SEARCH_PROVIDER_CONFIGURATION_CREATE",
+            target_type="SearchProviderConfiguration",
+            target_id=configuration.id,
+            after_data=SearchProviderConfigurationSerializer(configuration).data,
+        )
+        return ok(SearchProviderConfigurationSerializer(configuration).data, status.HTTP_201_CREATED)
+
+
+class SearchProviderConfigurationDetailView(APIView):
+    permission_classes = [IsAdministrator]
+    serializer_class = SearchProviderConfigurationSerializer
+
+    def patch(self, request: Request, pk: int) -> Response:
+        configuration = get_object_or_404(SearchProviderConfiguration, pk=pk)
+        before = SearchProviderConfigurationSerializer(configuration).data
+        serializer = SearchProviderConfigurationSerializer(configuration, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        configuration = serializer.save()
+        record_audit(
+            request,
+            action_type="SEARCH_PROVIDER_CONFIGURATION_UPDATE",
+            target_type="SearchProviderConfiguration",
+            target_id=configuration.id,
+            before_data=before,
+            after_data=SearchProviderConfigurationSerializer(configuration).data,
+        )
+        return ok(SearchProviderConfigurationSerializer(configuration).data)
 
 
 class SourceArticleIngestView(APIView):
