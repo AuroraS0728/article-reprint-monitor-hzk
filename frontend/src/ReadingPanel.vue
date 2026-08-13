@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { api } from "./api";
+import { api, downloadApiFile } from "./api";
 
 type Channel = { id: number; code: string; name: string; channel_type: string; notes: string };
 type Publication = { id: number; article_id: number; article_title: string; channel_name: string; url: string; published_at: string | null; reading_count: number | null; reading_status: string };
@@ -9,6 +9,7 @@ const error = ref("");
 const channels = ref<Channel[]>([]);
 const publications = ref<Publication[]>([]);
 const providerStatus = ref("接口待接入");
+const exporting = ref(false);
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -23,11 +24,22 @@ async function load(): Promise<void> {
   } finally { loading.value = false; }
 }
 onMounted(load);
+
+async function exportExcel(): Promise<void> {
+  exporting.value = true;
+  try {
+    await downloadApiFile("/reading-monitor/export.xlsx");
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : "阅读量报表导出失败";
+  } finally {
+    exporting.value = false;
+  }
+}
 </script>
 
 <template>
   <section class="reading-panel">
-    <div class="panel-heading"><div><h1>阅读量检测</h1><p>只展示已识别的自有分发内容；真实阅读量接口尚未接入。</p></div><el-tag type="info">{{ providerStatus }}</el-tag></div>
+    <div class="panel-heading"><div><h1>阅读量检测</h1><p>只展示已识别的自有分发内容；真实阅读量接口尚未接入。</p></div><div><el-tag type="info">{{ providerStatus }}</el-tag><el-button :loading="exporting" @click="exportExcel">导出阅读量 Excel</el-button></div></div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <el-skeleton v-else-if="loading" :rows="6" animated />
     <template v-else>
@@ -41,5 +53,5 @@ onMounted(load);
 </template>
 
 <style scoped>
-.reading-panel{display:grid;gap:16px}.panel-heading{display:flex;justify-content:space-between;align-items:start;gap:16px}.panel-heading h1{margin:0}.panel-heading p{margin:8px 0 0;color:#6b7280}
+.reading-panel{display:grid;gap:16px}.panel-heading{display:flex;justify-content:space-between;align-items:start;gap:16px}.panel-heading h1{margin:0}.panel-heading p{margin:8px 0 0;color:#6b7280}.panel-heading>div:last-child{display:flex;gap:10px;align-items:center}
 </style>

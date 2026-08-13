@@ -227,7 +227,7 @@ def build_global_repost_workbook(
             _set_hyperlink(data_sheet.cell(row, offset), first_url, label)
     _format_sheet(data_sheet, [19, 16, 48, 45, 14, 19, 14, 14, *([45] * len(domains))])
 
-    used_names = {"数据", "总统计", "统计汇总"}
+    used_names = {"数据", "总统计", "统计汇总", "说明"}
     for domain in domains:
         site_sheet = workbook.create_sheet(sanitize_excel_sheet_name(site_names[domain], used_names))
         site_sheet.append(
@@ -323,6 +323,23 @@ def build_global_repost_workbook(
         )
         summary_sheet.cell(summary_sheet.max_row, 5).number_format = "0.0%"
     _format_sheet(summary_sheet, [28, 32, 22, 16, 22])
+
+    notes_sheet = workbook.create_sheet("说明")
+    notes_sheet.append(["项目", "说明"])
+    for label, detail in [
+        ("报表边界", "本文件只包含已确认的外部转载；自有渠道分发和阅读量请下载独立的“自媒号阅读量”报表。"),
+        (
+            "平台列",
+            "转载网站列和每个网站工作表依据数据库中实际确认的外部转载动态生成；历史样表中的站点名称不是平台白名单。",
+        ),
+        ("候选链接", "待复核、已排除和已归入自有渠道的搜索候选不进入本报表；它们保留在系统详情中供人工复核。"),
+        ("链接", "发现转载时使用真实 Excel 超链接对象；同一文章同一站点的多条不同链接均保留在对应站点工作表。"),
+        ("导出时点", excel_datetime(export_as_of)),
+    ]:
+        notes_sheet.append(
+            [safe_excel_text(label), detail if isinstance(detail, datetime) else safe_excel_text(detail)]
+        )
+    _format_sheet(notes_sheet, [18, 100])
 
     output = BytesIO()
     workbook.save(output)

@@ -38,6 +38,7 @@ from apps.sources.models import (
     SearchRunStatus,
     Source,
 )
+from apps.sources.reading_export_services import build_owned_reading_workbook
 from apps.sources.services import (
     _next_search_time,
     canonicalize_http_url,
@@ -360,6 +361,16 @@ def test_operator_can_send_candidate_to_reading_module_without_repost_export(sou
     reading = client.get("/api/v1/reading-monitor/owned-publications")
     assert reading.status_code == 200
     assert reading.json()["data"]["publications"][0]["url"] == "https://owned-review.example.com/a"
+
+    content, _ = build_owned_reading_workbook()
+    workbook = load_workbook(BytesIO(content))
+    assert workbook.sheetnames[0] == "数据"
+    assert channel.name in workbook.sheetnames
+    assert workbook.sheetnames[-2:] == ["总统计", "说明"]
+    assert workbook["数据"]["D2"].value == "—"
+    assert workbook[channel.name]["D2"].hyperlink.target == "https://owned-review.example.com/a"
+    assert workbook["总统计"]["D2"].value == 0
+    assert "外部转载" in workbook["说明"]["B2"].value
 
 
 @pytest.mark.django_db
@@ -727,8 +738,8 @@ def test_dynamic_export_keeps_removed_links_and_creates_safe_site_sheets(source:
     content, _ = build_global_repost_workbook(GlobalExportFilters(article_id=article.id))
     workbook = load_workbook(BytesIO(content))
     assert workbook.sheetnames[0] == "数据"
-    assert workbook.sheetnames[-2:] == ["总统计", "统计汇总"]
-    assert len(workbook.sheetnames) == 4
+    assert workbook.sheetnames[-3:-1] == ["总统计", "统计汇总"]
+    assert len(workbook.sheetnames) == 5
     assert len(workbook.sheetnames[1]) <= 31
     assert not INVALID_SHEET_CHARACTERS_FOR_TEST.search(workbook.sheetnames[1])
     assert "共2条" in workbook["数据"]["I2"].value

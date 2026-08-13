@@ -59,7 +59,7 @@ from apps.sources.views import (
     SearchRunCandidateReviewView,
     SourceArticleIngestView,
 )
-from apps.sources.views_owned import OwnedChannelReadingView
+from apps.sources.views_owned import OwnedChannelReadingExportView, OwnedChannelReadingView
 
 from .views import (
     ChangePasswordView,
@@ -90,6 +90,7 @@ urlpatterns = [
     path("global-search-runs/<int:pk>/candidates", SearchRunCandidateListView.as_view()),
     path("search-candidates/<int:pk>/review", SearchRunCandidateReviewView.as_view()),
     path("reading-monitor/owned-publications", OwnedChannelReadingView.as_view()),
+    path("reading-monitor/export.xlsx", OwnedChannelReadingExportView.as_view()),
     path("articles/<int:pk>", ArticleDetailView.as_view()),
     path("articles/<int:pk>/reposts", ArticleRepostsView.as_view()),
     path("articles/bulk-paste", ArticleBulkPasteView.as_view()),
