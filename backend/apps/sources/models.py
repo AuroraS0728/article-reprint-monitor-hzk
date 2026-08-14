@@ -245,3 +245,68 @@ class SearchRunCandidate(models.Model):
                 name="uniq_search_run_candidate_url",
             )
         ]
+
+
+class TargetedCrawlTaskStatus(models.TextChoices):
+    """Lifecycle of a browser-worker task, distinct from an individual SearchRun."""
+
+    PENDING = "PENDING", "待领取"
+    CLAIMED = "CLAIMED", "已领取"
+    CLOSED = "CLOSED", "已关闭"
+
+
+class TargetedCrawlTask(models.Model):
+    """A source-scoped, leased task for an approved local browser worker.
+
+    The task stores no browser cookies, search-page HTML or account credentials.  A
+    short-lived claim secret is returned once to the worker and only its hash is
+    retained server-side.
+    """
+
+    source = models.ForeignKey(Source, related_name="targeted_crawl_tasks", on_delete=models.PROTECT)
+    article = models.OneToOneField(
+        "articles.Article",
+        related_name="targeted_crawl_task",
+        on_delete=models.CASCADE,
+    )
+    query = models.CharField(max_length=500)
+    status = models.CharField(
+        max_length=16,
+        choices=TargetedCrawlTaskStatus.choices,
+        default=TargetedCrawlTaskStatus.PENDING,
+        db_index=True,
+    )
+    claimed_by_token = models.ForeignKey(
+        "SourceIngestToken",
+        related_name="claimed_targeted_crawl_tasks",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+    claim_token_hash = models.CharField(max_length=64, blank=True, default="")
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    claim_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    next_available_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_completed_at = models.DateTimeField(null=True, blank=True)
+    last_run = models.ForeignKey(
+        SearchRun,
+        related_name="targeted_crawl_tasks",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
+    last_error_code = models.CharField(max_length=64, blank=True, default="")
+    last_error_message = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "sources_targeted_crawl_task"
+        ordering = ["next_available_at", "id"]
+        indexes = [
+            models.Index(
+                fields=["source", "status", "next_available_at"],
+                name="sources_tar_source__cbb47e_idx",
+            )
+        ]

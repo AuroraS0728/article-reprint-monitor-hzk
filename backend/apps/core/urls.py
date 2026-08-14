@@ -60,6 +60,10 @@ from apps.sources.views import (
     SearchRunCandidateListView,
     SearchRunCandidateReviewView,
     SourceArticleIngestView,
+    TargetedCrawlCandidatesView,
+    TargetedCrawlRunCompleteView,
+    TargetedCrawlTaskClaimView,
+    TargetedCrawlTaskListView,
 )
 from apps.sources.views_owned import OwnedChannelReadingExportView, OwnedChannelReadingView
 
@@ -83,6 +87,10 @@ urlpatterns = [
     path("users/<int:pk>", UserDetailView.as_view()),
     path("articles", ArticleListCreateView.as_view()),
     path("source-ingest/articles", SourceArticleIngestView.as_view()),
+    path("targeted-crawl/tasks", TargetedCrawlTaskListView.as_view()),
+    path("targeted-crawl/tasks/<int:pk>/claim", TargetedCrawlTaskClaimView.as_view()),
+    path("targeted-crawl/candidates", TargetedCrawlCandidatesView.as_view()),
+    path("targeted-crawl/runs", TargetedCrawlRunCompleteView.as_view()),
     path("source-ingest-conflicts", ArticleIngestConflictListView.as_view()),
     path(
         "source-ingest-conflicts/<int:pk>/review",

@@ -148,6 +148,59 @@ class SearchRunCandidateReviewSerializer(serializers.Serializer[object]):
         return attrs
 
 
+class TargetedCrawlCandidateItemSerializer(serializers.Serializer[object]):
+    """Untrusted browser result data; the server derives the canonical host and URL."""
+
+    title = serializers.CharField(max_length=500, trim_whitespace=True)
+    url = serializers.URLField(max_length=2048)
+    site_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    published_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
+    search_phase = serializers.ChoiceField(choices=["EXACT", "BROAD"], required=False, default="EXACT")
+    provider_code = serializers.RegexField(
+        regex=r"^[a-z0-9_]{1,50}$",
+        required=False,
+        default="targeted_crawl",
+    )
+
+    def validate_title(self, value: str) -> str:
+        if not value.strip():
+            raise serializers.ValidationError("候选标题不能为空。")
+        return value.strip()
+
+
+class TargetedCrawlCandidatesSerializer(serializers.Serializer[object]):
+    task_id = serializers.IntegerField(min_value=1)
+    run_id = serializers.IntegerField(min_value=1)
+    claim_token = serializers.CharField(min_length=32, max_length=256, trim_whitespace=True, write_only=True)
+    candidates = TargetedCrawlCandidateItemSerializer(many=True)
+
+    def validate_candidates(self, value: object) -> object:
+        if not isinstance(value, list) or not 1 <= len(value) <= 100:
+            raise serializers.ValidationError("每次最多提交 100 条候选结果，且至少需要 1 条。")
+        return value
+
+
+class TargetedCrawlRunSerializer(serializers.Serializer[object]):
+    task_id = serializers.IntegerField(min_value=1)
+    run_id = serializers.IntegerField(min_value=1)
+    claim_token = serializers.CharField(min_length=32, max_length=256, trim_whitespace=True, write_only=True)
+    status = serializers.ChoiceField(choices=["SUCCESS", "ERROR"])
+    error_code = serializers.RegexField(
+        regex=r"^[A-Z0-9_]{1,64}$",
+        required=False,
+        allow_blank=True,
+        default="",
+    )
+    error_message = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        if attrs["status"] == "ERROR" and not attrs.get("error_code"):
+            raise serializers.ValidationError({"error_code": "失败运行必须提供错误代码。"})
+        if attrs["status"] == "SUCCESS" and (attrs.get("error_code") or attrs.get("error_message")):
+            raise serializers.ValidationError("成功运行不能携带失败详情。")
+        return attrs
+
+
 class ArticleIngestConflictSerializer(serializers.ModelSerializer[ArticleIngestConflict]):
     class Meta:
         model = ArticleIngestConflict

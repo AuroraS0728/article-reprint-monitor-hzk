@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hmac
 import html
 import ipaddress
 import json
 import re
+import secrets
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -43,6 +45,9 @@ from .models import (
     SearchRunCandidate,
     SearchRunStatus,
     Source,
+    SourceIngestToken,
+    TargetedCrawlTask,
+    TargetedCrawlTaskStatus,
 )
 
 TRACKING_QUERY_KEYS = {
@@ -896,7 +901,14 @@ def _candidate_as_search_candidate(record: SearchRunCandidate) -> SearchCandidat
 
 def _refresh_search_run_counts(run: SearchRun) -> None:
     candidates = SearchRunCandidate.objects.filter(search_run=run)
+    phases = candidates.values_list("search_phases", flat=True)
     run.candidate_count = candidates.count()
+    run.exact_candidate_count = sum(1 for value in phases if "EXACT" in value)
+    # Re-evaluate because the query set is lazy and `phases` has already been
+    # consumed above. This is portable across MySQL JSON implementations.
+    run.broad_candidate_count = sum(
+        1 for value in candidates.values_list("search_phases", flat=True) if "BROAD" in value
+    )
     run.merged_candidate_count = run.candidate_count
     run.matched_count = candidates.filter(disposition=SearchCandidateDisposition.MATCHED).count()
     run.repost_count = candidates.filter(content_relation=ContentRelation.REPOST).count()
@@ -905,6 +917,8 @@ def _refresh_search_run_counts(run: SearchRun) -> None:
     run.save(
         update_fields=[
             "candidate_count",
+            "exact_candidate_count",
+            "broad_candidate_count",
             "merged_candidate_count",
             "matched_count",
             "repost_count",
@@ -912,6 +926,310 @@ def _refresh_search_run_counts(run: SearchRun) -> None:
             "review_required_count",
         ]
     )
+
+
+def _release_expired_targeted_crawl_claims(*, source: Source, now: datetime) -> None:
+    """Return abandoned browser leases to the source-specific queue."""
+
+    TargetedCrawlTask.objects.filter(
+        source=source,
+        status=TargetedCrawlTaskStatus.CLAIMED,
+        claim_expires_at__lte=now,
+    ).update(
+        status=TargetedCrawlTaskStatus.PENDING,
+        claimed_by_token=None,
+        claim_token_hash="",
+        claimed_at=None,
+        claim_expires_at=None,
+    )
+
+
+@transaction.atomic
+def due_targeted_crawl_tasks(*, source: Source, limit: int) -> list[TargetedCrawlTask]:
+    """Materialize due browser-worker tasks only for the token's source.
+
+    A task is durable per source article and each completed claim produces a separate
+    SearchRun.  That preserves browser execution history without queueing seven days
+    of ETA work or exposing other sources' original titles.
+    """
+
+    now = timezone.now()
+    _release_expired_targeted_crawl_claims(source=source, now=now)
+    articles = list(
+        Article.objects.select_for_update()
+        .filter(
+            source=source,
+            status="ACTIVE",
+            monitoring_status=ArticleMonitoringStatus.ACTIVE,
+            monitor_until__gt=now,
+        )
+        .only("id", "title", "monitor_started_at", "monitor_until")
+    )
+    for article in articles:
+        task, created = TargetedCrawlTask.objects.get_or_create(
+            article=article,
+            defaults={
+                "source": source,
+                "query": article.title,
+                "next_available_at": now,
+            },
+        )
+        if not created and task.status == TargetedCrawlTaskStatus.PENDING and task.query != article.title:
+            task.query = article.title
+            task.next_available_at = now
+            task.save(update_fields=["query", "next_available_at", "updated_at"])
+    return list(
+        TargetedCrawlTask.objects.select_related("article")
+        .filter(
+            source=source,
+            status=TargetedCrawlTaskStatus.PENDING,
+            next_available_at__lte=now,
+        )
+        .order_by("next_available_at", "id")[:limit]
+    )
+
+
+@transaction.atomic
+def claim_targeted_crawl_task(*, task_id: int, token: SourceIngestToken) -> tuple[TargetedCrawlTask, SearchRun, str]:
+    now = timezone.now()
+    task = (
+        TargetedCrawlTask.objects.select_for_update()
+        .select_related("article")
+        .filter(pk=task_id, source=token.source)
+        .first()
+    )
+    if task is None:
+        raise PermissionError("任务不存在或不属于当前来源。")
+    if task.status == TargetedCrawlTaskStatus.CLAIMED and task.claim_expires_at and task.claim_expires_at <= now:
+        task.status = TargetedCrawlTaskStatus.PENDING
+        task.claimed_by_token = None
+        task.claim_token_hash = ""
+        task.claimed_at = None
+        task.claim_expires_at = None
+    if task.status != TargetedCrawlTaskStatus.PENDING:
+        raise ValueError("任务已被其他采集端领取或已关闭。")
+    if task.next_available_at and task.next_available_at > now:
+        raise ValueError("任务尚未到执行时间。")
+
+    claim_token = secrets.token_urlsafe(32)
+    run = SearchRun.objects.create(
+        article=task.article,
+        provider="targeted_crawl",
+        query=json.dumps([f'"{task.query}"', task.query], ensure_ascii=False),
+        status=SearchRunStatus.RUNNING,
+        started_at=now,
+    )
+    task.status = TargetedCrawlTaskStatus.CLAIMED
+    task.claimed_by_token = token
+    task.claim_token_hash = sha256(claim_token.encode("utf-8")).hexdigest()
+    task.claimed_at = now
+    task.claim_expires_at = now + timedelta(seconds=settings.TARGETED_CRAWL_CLAIM_TTL_SECONDS)
+    task.last_run = run
+    task.attempt_count += 1
+    task.last_error_code = ""
+    task.last_error_message = ""
+    task.save(
+        update_fields=[
+            "status",
+            "claimed_by_token",
+            "claim_token_hash",
+            "claimed_at",
+            "claim_expires_at",
+            "last_run",
+            "attempt_count",
+            "last_error_code",
+            "last_error_message",
+            "updated_at",
+        ]
+    )
+    return task, run, claim_token
+
+
+def _locked_targeted_crawl_run(
+    *, task_id: int, run_id: int, claim_token: str, token: SourceIngestToken
+) -> tuple[TargetedCrawlTask, SearchRun]:
+    task = (
+        TargetedCrawlTask.objects.select_for_update()
+        .select_related("article")
+        .filter(pk=task_id, source=token.source, claimed_by_token=token)
+        .first()
+    )
+    if task is None:
+        raise PermissionError("任务不存在、不属于当前来源，或不属于当前采集端。")
+    expected_hash = sha256(claim_token.encode("utf-8")).hexdigest()
+    if (
+        task.status != TargetedCrawlTaskStatus.CLAIMED
+        or not task.claim_expires_at
+        or task.claim_expires_at <= timezone.now()
+        or not task.claim_token_hash
+        or not hmac.compare_digest(task.claim_token_hash, expected_hash)
+    ):
+        raise PermissionError("任务租约无效或已过期。")
+    run = SearchRun.objects.select_for_update().filter(pk=run_id, article=task.article).first()
+    if run is None or task.last_run_id != run.id or run.status != SearchRunStatus.RUNNING:
+        raise ValueError("运行记录不存在或已经结束。")
+    return task, run
+
+
+def _classify_targeted_crawl_candidate(
+    *, task: TargetedCrawlTask, run: SearchRun, candidate: SearchCandidate, phase: str
+) -> tuple[SearchRunCandidate, bool]:
+    canonical_url = canonicalize_http_url(candidate.url)
+    record = _persist_search_candidate(run=run, canonical_url=canonical_url, candidate=candidate, phase=phase)
+    article = task.article
+    if is_url_for_source(task.source, canonical_url):
+        _classify_search_candidate(
+            record,
+            disposition=SearchCandidateDisposition.EXCLUDED_SOURCE,
+            reason_code="ORIGINAL_SOURCE_URL",
+        )
+        return record, False
+    if article.original_url and canonical_url == canonicalize_http_url(article.original_url):
+        _classify_search_candidate(
+            record,
+            disposition=SearchCandidateDisposition.EXCLUDED_ORIGINAL,
+            reason_code="ORIGINAL_URL",
+        )
+        return record, False
+    if _candidate_is_too_early(article, candidate):
+        _classify_search_candidate(
+            record,
+            disposition=SearchCandidateDisposition.EXCLUDED_TOO_EARLY,
+            reason_code="PUBLISHED_TOO_EARLY",
+        )
+        return record, False
+
+    match = compare_titles(article.title, candidate)
+    if not match.matched:
+        _classify_search_candidate(
+            record,
+            disposition=SearchCandidateDisposition.NOT_MATCHED,
+            similarity_score=match.similarity_score,
+            reason_code="TITLE_NOT_MATCHED",
+        )
+        return record, False
+
+    relation, owned_channel, reason = classify_owned_channel(candidate)
+    _classify_search_candidate(
+        record,
+        disposition=SearchCandidateDisposition.MATCHED,
+        similarity_score=match.similarity_score,
+        reason_code=reason,
+        content_relation=relation,
+        owned_channel=owned_channel,
+    )
+    _, created = upsert_global_repost(
+        article=article,
+        candidate=candidate,
+        match=match,
+        found_at=timezone.now(),
+        content_relation=relation,
+        owned_channel=owned_channel,
+        classification_reason=reason,
+    )
+    return record, bool(created and relation == ContentRelation.REPOST)
+
+
+@transaction.atomic
+def submit_targeted_crawl_candidates(
+    *,
+    task_id: int,
+    run_id: int,
+    claim_token: str,
+    token: SourceIngestToken,
+    items: list[dict[str, object]],
+) -> list[SearchRunCandidate]:
+    task, run = _locked_targeted_crawl_run(
+        task_id=task_id,
+        run_id=run_id,
+        claim_token=claim_token,
+        token=token,
+    )
+    persisted: list[SearchRunCandidate] = []
+    new_repost_count = 0
+    for item in items:
+        raw_url = str(item["url"])
+        canonical_url = canonicalize_http_url(raw_url)
+        candidate = SearchCandidate(
+            title=str(item["title"]),
+            url=raw_url,
+            domain=(urlsplit(canonical_url).hostname or "").lower(),
+            site_name=str(item.get("site_name", "")),
+            published_at=cast(datetime | None, item.get("published_at")),
+            provider=str(item.get("provider_code", "targeted_crawl")),
+        )
+        record, created = _classify_targeted_crawl_candidate(
+            task=task,
+            run=run,
+            candidate=candidate,
+            phase=str(item.get("search_phase", "EXACT")),
+        )
+        persisted.append(record)
+        new_repost_count += int(created)
+    if new_repost_count:
+        run.new_repost_count += new_repost_count
+        run.save(update_fields=["new_repost_count"])
+    _refresh_search_run_counts(run)
+    return persisted
+
+
+@transaction.atomic
+def complete_targeted_crawl_run(
+    *,
+    task_id: int,
+    run_id: int,
+    claim_token: str,
+    token: SourceIngestToken,
+    run_status: str,
+    error_code: str = "",
+    error_message: str = "",
+) -> tuple[TargetedCrawlTask, SearchRun]:
+    task, run = _locked_targeted_crawl_run(
+        task_id=task_id,
+        run_id=run_id,
+        claim_token=claim_token,
+        token=token,
+    )
+    now = timezone.now()
+    _refresh_search_run_counts(run)
+    run.status = SearchRunStatus.SUCCESS if run_status == "SUCCESS" else SearchRunStatus.ERROR
+    run.error_code = error_code if run_status == "ERROR" else ""
+    run.error_message = safe_error_message(error_message) if run_status == "ERROR" else ""
+    run.completed_at = now
+    run.save(update_fields=["status", "error_code", "error_message", "completed_at"])
+
+    task.status = TargetedCrawlTaskStatus.PENDING
+    task.claimed_by_token = None
+    task.claim_token_hash = ""
+    task.claimed_at = None
+    task.claim_expires_at = None
+    task.last_completed_at = now
+    task.last_error_code = run.error_code
+    task.last_error_message = run.error_message
+    if run_status == "SUCCESS":
+        task.next_available_at = _next_search_time(task.article, now)
+    else:
+        task.next_available_at = min(
+            now + timedelta(minutes=settings.SEARCH_ERROR_BACKOFF_MINUTES),
+            task.article.monitor_until or now,
+        )
+    if task.next_available_at is None:
+        task.status = TargetedCrawlTaskStatus.CLOSED
+    task.save(
+        update_fields=[
+            "status",
+            "claimed_by_token",
+            "claim_token_hash",
+            "claimed_at",
+            "claim_expires_at",
+            "last_completed_at",
+            "last_error_code",
+            "last_error_message",
+            "next_available_at",
+            "updated_at",
+        ]
+    )
+    return task, run
 
 
 @transaction.atomic

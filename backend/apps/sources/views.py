@@ -26,6 +26,7 @@ from .models import (
     SearchRun,
     SearchRunCandidate,
     SourceIngestToken,
+    TargetedCrawlTask,
 )
 from .serializers import (
     ArticleIngestConflictReviewSerializer,
@@ -35,12 +36,18 @@ from .serializers import (
     SearchRunCandidateReviewSerializer,
     SearchRunCandidateSerializer,
     SourceArticleIngestSerializer,
+    TargetedCrawlCandidatesSerializer,
+    TargetedCrawlRunSerializer,
 )
 from .services import (
     approve_source_ingest_conflict,
+    claim_targeted_crawl_task,
+    complete_targeted_crawl_run,
+    due_targeted_crawl_tasks,
     ingest_source_article,
     link_source_ingest_conflict,
     review_search_candidate,
+    submit_targeted_crawl_candidates,
 )
 from .tasks import search_article_reposts
 
@@ -369,6 +376,176 @@ class SearchRunCandidateReviewView(APIView):
             },
         )
         return ok(SearchRunCandidateSerializer(reviewed).data)
+
+
+def _targeted_crawl_task_payload(task: TargetedCrawlTask) -> dict[str, object]:
+    article = task.article
+    return {
+        "id": task.id,
+        "article_id": article.id,
+        "query": task.query,
+        "title": article.title,
+        "published_at": article.published_at,
+        "original_url": article.original_url,
+        "monitor_until": article.monitor_until,
+        "status": task.status,
+        "attempt_count": task.attempt_count,
+        "next_available_at": task.next_available_at,
+        "claim_expires_at": task.claim_expires_at,
+    }
+
+
+class TargetedCrawlTaskListView(APIView):
+    """Lease only the authenticated source's due browser-search tasks."""
+
+    authentication_classes = [SourceTokenAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        try:
+            limit = int(request.query_params.get("limit", "1"))
+        except ValueError:
+            return Response(
+                {"success": False, "error": {"code": "INVALID_LIMIT", "message": "limit 必须是整数。"}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not 1 <= limit <= 20:
+            return Response(
+                {"success": False, "error": {"code": "INVALID_LIMIT", "message": "limit 必须在 1 到 20 之间。"}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        token = cast(SourceIngestToken, request.auth)
+        tasks = due_targeted_crawl_tasks(source=token.source, limit=limit)
+        return ok({"tasks": [_targeted_crawl_task_payload(task) for task in tasks]})
+
+
+class TargetedCrawlTaskClaimView(APIView):
+    authentication_classes = [SourceTokenAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request: Request, pk: int) -> Response:
+        token = cast(SourceIngestToken, request.auth)
+        try:
+            task, run, claim_token = claim_targeted_crawl_task(task_id=pk, token=token)
+        except PermissionError as error:
+            return Response(
+                {"success": False, "error": {"code": "TARGETED_CRAWL_CLAIM_DENIED", "message": str(error)}},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except ValueError as error:
+            return Response(
+                {"success": False, "error": {"code": "TARGETED_CRAWL_UNAVAILABLE", "message": str(error)}},
+                status=status.HTTP_409_CONFLICT,
+            )
+        record_audit(
+            request,
+            action_type="TARGETED_CRAWL_TASK_CLAIMED",
+            target_type="TargetedCrawlTask",
+            target_id=task.id,
+            after_data={"run_id": run.id, "article_id": task.article_id},
+        )
+        return ok(
+            {
+                "task": _targeted_crawl_task_payload(task),
+                "run_id": run.id,
+                "claim_token": claim_token,
+            },
+            status.HTTP_201_CREATED,
+        )
+
+
+class TargetedCrawlCandidatesView(APIView):
+    authentication_classes = [SourceTokenAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = TargetedCrawlCandidatesSerializer
+
+    def post(self, request: Request) -> Response:
+        serializer = TargetedCrawlCandidatesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        token = cast(SourceIngestToken, request.auth)
+        try:
+            candidates = submit_targeted_crawl_candidates(
+                task_id=cast(int, data["task_id"]),
+                run_id=cast(int, data["run_id"]),
+                claim_token=cast(str, data["claim_token"]),
+                token=token,
+                items=cast(list[dict[str, object]], data["candidates"]),
+            )
+        except PermissionError as error:
+            return Response(
+                {"success": False, "error": {"code": "TARGETED_CRAWL_LEASE_INVALID", "message": str(error)}},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except (ValueError, TypeError) as error:
+            return Response(
+                {"success": False, "error": {"code": "TARGETED_CRAWL_CANDIDATE_INVALID", "message": str(error)}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        record_audit(
+            request,
+            action_type="TARGETED_CRAWL_CANDIDATES_SUBMITTED",
+            target_type="SearchRun",
+            target_id=cast(int, data["run_id"]),
+            after_data={"task_id": data["task_id"], "candidate_count": len(candidates)},
+        )
+        return ok(SearchRunCandidateSerializer(candidates, many=True).data, status.HTTP_201_CREATED)
+
+
+class TargetedCrawlRunCompleteView(APIView):
+    authentication_classes = [SourceTokenAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = TargetedCrawlRunSerializer
+
+    def post(self, request: Request) -> Response:
+        serializer = TargetedCrawlRunSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        token = cast(SourceIngestToken, request.auth)
+        try:
+            task, run = complete_targeted_crawl_run(
+                task_id=cast(int, data["task_id"]),
+                run_id=cast(int, data["run_id"]),
+                claim_token=cast(str, data["claim_token"]),
+                token=token,
+                run_status=cast(str, data["status"]),
+                error_code=cast(str, data.get("error_code", "")),
+                error_message=cast(str, data.get("error_message", "")),
+            )
+        except PermissionError as error:
+            return Response(
+                {"success": False, "error": {"code": "TARGETED_CRAWL_LEASE_INVALID", "message": str(error)}},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except ValueError as error:
+            return Response(
+                {"success": False, "error": {"code": "TARGETED_CRAWL_RUN_INVALID", "message": str(error)}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        record_audit(
+            request,
+            action_type="TARGETED_CRAWL_RUN_COMPLETED",
+            target_type="SearchRun",
+            target_id=run.id,
+            after_data={"task_id": task.id, "status": run.status, "candidate_count": run.candidate_count},
+        )
+        return ok(
+            {
+                "task": _targeted_crawl_task_payload(task),
+                "run": {
+                    "id": run.id,
+                    "status": run.status,
+                    "candidate_count": run.candidate_count,
+                    "repost_count": run.repost_count,
+                    "owned_count": run.owned_count,
+                    "review_required_count": run.review_required_count,
+                    "new_repost_count": run.new_repost_count,
+                    "completed_at": run.completed_at,
+                    "error_code": run.error_code,
+                    "error_message": run.error_message,
+                },
+            }
+        )
 
 
 class ArticleIngestConflictReviewView(APIView):
