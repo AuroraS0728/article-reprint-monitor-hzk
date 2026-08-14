@@ -15,6 +15,7 @@ from apps.accounts.models import User
 from apps.articles.models import Article, ArticleStatus
 from apps.audit.services import record_audit
 from apps.core.permissions import CanOperate, IsAdministrator
+from apps.core.serializers import EmptySerializer
 from apps.core.views import ok
 from apps.reposts.models import ContentRelation, RepostRecord
 
@@ -400,7 +401,9 @@ class TargetedCrawlTaskListView(APIView):
 
     authentication_classes = [SourceTokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EmptySerializer
 
+    @extend_schema(operation_id="targeted_crawl_task_list", responses=EmptySerializer)
     def get(self, request: Request) -> Response:
         try:
             limit = int(request.query_params.get("limit", "1"))
@@ -422,7 +425,9 @@ class TargetedCrawlTaskListView(APIView):
 class TargetedCrawlTaskClaimView(APIView):
     authentication_classes = [SourceTokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EmptySerializer
 
+    @extend_schema(operation_id="targeted_crawl_task_claim", request=EmptySerializer, responses=EmptySerializer)
     def post(self, request: Request, pk: int) -> Response:
         token = cast(SourceIngestToken, request.auth)
         try:
