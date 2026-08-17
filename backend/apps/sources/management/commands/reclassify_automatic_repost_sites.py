@@ -6,7 +6,7 @@ from collections import Counter
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from apps.reposts.models import ContentRelation, RepostRecord
+from apps.reposts.models import ContentRelation
 from apps.sources.models import SearchCandidateDisposition, SearchRun, SearchRunCandidate
 from apps.sources.services import (
     _candidate_as_search_candidate,
@@ -19,7 +19,7 @@ from apps.sources.services import (
 
 
 class Command(BaseCommand):
-    help = "Confirm retained candidates for configured automatic repost media sites."
+    help = "Apply automatic repost and positive owned-channel rules to retained candidates."
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         parser.add_argument("--dry-run", action="store_true", help="Only report proposed changes.")
@@ -35,43 +35,60 @@ class Command(BaseCommand):
             candidate = _candidate_as_search_candidate(record)
             match = compare_titles(article.title, candidate)
             site = automatic_repost_site_for_candidate(candidate)
-            if site is None:
+            relation, owned_channel, reason = classify_owned_channel(candidate)
+            if relation != ContentRelation.OWNED and site is None:
                 continue
-            relation, _, _ = classify_owned_channel(candidate)
-            existing_owned = RepostRecord.objects.filter(
-                article=article,
-                canonical_url_hash=record.canonical_url_hash,
-                content_relation=ContentRelation.OWNED,
-                is_valid=True,
-            ).exists()
-            if relation == ContentRelation.OWNED or existing_owned:
-                counts["owned_skipped"] += 1
+            if record.reason_code == "MANUAL_REPOST":
+                counts["manual_repost_skipped"] += 1
                 continue
-            counts[site.code] += 1
+            if relation == ContentRelation.OWNED:
+                rule_code = f"OWNED_CHANNEL:{owned_channel.code}" if owned_channel else "OWNED_CHANNEL"
+            else:
+                if site is None:
+                    continue
+                relation = ContentRelation.REPOST
+                owned_channel = None
+                rule_code = f"AUTO_REPOST_SITE_DOMAIN:{site.code}"
+            counts[rule_code] += 1
             if (
-                record.content_relation == ContentRelation.REPOST
-                and record.reason_code == f"AUTO_REPOST_SITE_DOMAIN:{site.code}"
+                record.content_relation == relation
+                and record.reason_code == rule_code
+                and record.owned_channel_id == (owned_channel.id if owned_channel else None)
             ):
                 continue
             changed += 1
             if dry_run:
                 continue
             now = timezone.now()
-            reason = f"AUTO_REPOST_SITE_DOMAIN:{site.code}"
-            upsert_global_repost(
+            global_record, _ = upsert_global_repost(
                 article=article,
                 candidate=candidate,
                 match=match,
                 found_at=now,
-                content_relation=ContentRelation.REPOST,
-                owned_channel=None,
-                classification_reason=reason,
+                content_relation=relation,
+                owned_channel=owned_channel,
+                classification_reason=rule_code,
+            )
+            global_record.content_relation = relation
+            global_record.owned_channel = owned_channel
+            global_record.classification_reason = rule_code
+            global_record.classified_at = now
+            global_record.is_valid = True
+            global_record.save(
+                update_fields=[
+                    "content_relation",
+                    "owned_channel",
+                    "classification_reason",
+                    "classified_at",
+                    "is_valid",
+                    "updated_at",
+                ]
             )
             record.disposition = SearchCandidateDisposition.MATCHED
-            record.reason_code = reason
-            record.content_relation = ContentRelation.REPOST
-            record.owned_channel = None
-            record.classification_reason = reason
+            record.reason_code = rule_code
+            record.content_relation = relation
+            record.owned_channel = owned_channel
+            record.classification_reason = rule_code
             record.classified_at = now
             record.save(
                 update_fields=[

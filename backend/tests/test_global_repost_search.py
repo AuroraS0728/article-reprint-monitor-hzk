@@ -844,10 +844,14 @@ def test_configured_media_site_auto_confirms_candidate_threshold_and_keeps_confi
     repost = RepostRecord.objects.get(article=article, canonical_url__contains="/repost")
     assert repost.content_relation == ContentRelation.REPOST
     assert repost.classification_reason == "AUTO_REPOST_SITE_DOMAIN:AUTO_MEDIA"
-    # A positively identified first-party account is never auto-counted as a repost.
-    assert not RepostRecord.objects.filter(article=article, canonical_url__contains="/owned").exists()
+    # A positively identified first-party account enters reading measurement,
+    # and is never counted as an external repost.
+    owned_record = RepostRecord.objects.get(article=article, canonical_url__contains="/owned")
+    assert owned_record.content_relation == ContentRelation.OWNED
+    assert owned_record.owned_channel_id is not None
     assert run.repost_count == 1
-    assert run.matched_count == 1
+    assert run.owned_count == 1
+    assert run.matched_count == 2
 
 
 @pytest.mark.django_db
@@ -876,6 +880,62 @@ def test_auto_repost_reclassification_promotes_retained_historical_candidates(so
     assert saved.classification_reason == "AUTO_REPOST_SITE_DOMAIN:HISTORICAL_AUTO_MEDIA"
     assert SearchRunCandidate.objects.get(search_run=run).content_relation == ContentRelation.REPOST
     assert "APPLIED: changed=1" in output.getvalue()
+
+
+@pytest.mark.django_db
+@override_settings(SEARCH_SIMILARITY_THRESHOLD=90, SEARCH_CANDIDATE_MIN_SIMILARITY=80)
+def test_caifuhao_subdomain_is_auto_classified_as_owned_reading_channel(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    candidate = SearchCandidate(
+        title="这一主线再掀涨停潮低位方向正在成为新主角报道",
+        url="https://caifuhao.eastmoney.com/news/example",
+        site_name="财富号",
+    )
+    owned_channel = OwnedChannel.objects.get(code="EASTMONEY")
+    assert owned_channel.name == "财富号"
+    assert owned_channel.match_rules == {"subdomains": ["caifuhao.eastmoney.com"]}
+
+    with patch("apps.sources.services.fuzz.ratio", return_value=85.0):
+        run = search_article(article, provider=RawStaticProvider([candidate]))
+
+    saved = RepostRecord.objects.get(article=article)
+    assert saved.content_relation == ContentRelation.OWNED
+    assert saved.owned_channel is not None
+    assert saved.owned_channel.code == "EASTMONEY"
+    assert saved.classification_reason == "OWNED_CHANNEL_DOMAIN_MATCH"
+    assert run.owned_count == 1
+    assert run.repost_count == 0
+
+
+@pytest.mark.django_db
+@override_settings(SEARCH_SIMILARITY_THRESHOLD=90, SEARCH_CANDIDATE_MIN_SIMILARITY=80)
+def test_reclassification_moves_historical_caifuhao_candidate_to_owned_reading(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    candidate = SearchCandidate(
+        title="这一主线再掀涨停潮低位方向正在成为新主角报道",
+        url="https://caifuhao.eastmoney.com/news/historical",
+        site_name="财富号",
+    )
+    owned_channel = OwnedChannel.objects.get(code="EASTMONEY")
+    owned_channel.is_active = False
+    owned_channel.save(update_fields=["is_active"])
+    with patch("apps.sources.services.fuzz.ratio", return_value=85.0):
+        run = search_article(article, provider=RawStaticProvider([candidate]))
+    assert not RepostRecord.objects.filter(article=article).exists()
+
+    owned_channel.is_active = True
+    owned_channel.save(update_fields=["is_active"])
+    output = StringIO()
+    with patch("apps.sources.services.fuzz.ratio", return_value=85.0):
+        call_command("reclassify_automatic_repost_sites", stdout=output)
+
+    saved = RepostRecord.objects.get(article=article)
+    assert saved.content_relation == ContentRelation.OWNED
+    assert saved.owned_channel is not None
+    assert saved.owned_channel.code == "EASTMONEY"
+    saved_candidate = SearchRunCandidate.objects.get(search_run=run)
+    assert saved_candidate.content_relation == ContentRelation.OWNED
+    assert "OWNED_CHANNEL:EASTMONEY=1" in output.getvalue()
 
 
 @pytest.mark.django_db

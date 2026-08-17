@@ -1115,12 +1115,13 @@ def _classify_targeted_crawl_candidate(
     record = _persist_search_candidate(run=run, canonical_url=canonical_url, candidate=candidate, phase=phase)
     relation, owned_channel, reason = classify_owned_channel(candidate)
     automatic_site = automatic_repost_site_for_candidate(candidate)
+    auto_confirmed_owned = relation == ContentRelation.OWNED
     automatic_repost_reason = (
         f"AUTO_REPOST_SITE_DOMAIN:{automatic_site.code}"
         if automatic_site is not None and relation != ContentRelation.OWNED
         else None
     )
-    if not match.matched and automatic_repost_reason is None:
+    if not match.matched and not auto_confirmed_owned and automatic_repost_reason is None:
         _classify_search_candidate(
             record,
             disposition=SearchCandidateDisposition.NOT_MATCHED,
@@ -1544,6 +1545,7 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
             match = compare_titles(article.title, candidate)
             relation, owned_channel, classification_reason = classify_owned_channel(candidate, channels=owned_channels)
             automatic_site = automatic_repost_site_for_candidate(candidate, sites=automatic_repost_sites)
+            auto_confirmed_owned = relation == ContentRelation.OWNED
             automatic_repost_reason = (
                 f"AUTO_REPOST_SITE_DOMAIN:{automatic_site.code}"
                 if automatic_site is not None and relation != ContentRelation.OWNED
@@ -1553,7 +1555,7 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
                 candidate_record,
                 disposition=(
                     SearchCandidateDisposition.MATCHED
-                    if match.matched or automatic_repost_reason is not None
+                    if match.matched or auto_confirmed_owned or automatic_repost_reason is not None
                     else SearchCandidateDisposition.NOT_MATCHED
                 ),
                 similarity_score=match.similarity_score,
@@ -1563,7 +1565,7 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
                     else "TITLE_MATCH" if match.matched else "TITLE_NOT_MATCHED"
                 ),
             )
-            if not match.matched and automatic_repost_reason is None:
+            if not match.matched and not auto_confirmed_owned and automatic_repost_reason is None:
                 continue
             matched_count += 1
             if automatic_repost_reason is not None:
