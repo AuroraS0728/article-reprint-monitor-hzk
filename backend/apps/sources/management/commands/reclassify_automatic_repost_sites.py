@@ -6,10 +6,11 @@ from collections import Counter
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from apps.reposts.models import ContentRelation
+from apps.reposts.models import ContentRelation, RepostRecord
 from apps.sources.models import SearchCandidateDisposition, SearchRun, SearchRunCandidate
 from apps.sources.services import (
     _candidate_as_search_candidate,
+    _candidate_meets_retention_threshold,
     _refresh_search_run_counts,
     automatic_repost_site_for_candidate,
     classify_owned_channel,
@@ -23,9 +24,15 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         parser.add_argument("--dry-run", action="store_true", help="Only report proposed changes.")
+        parser.add_argument(
+            "--prune-below-threshold",
+            action="store_true",
+            help="Remove prior automatic repost candidates below the configured retention threshold.",
+        )
 
     def handle(self, *args: object, **options: object) -> None:
         dry_run = bool(options["dry_run"])
+        prune_below_threshold = bool(options["prune_below_threshold"])
         changed_runs: set[int] = set()
         counts: Counter[str] = Counter()
         changed = 0
@@ -34,6 +41,14 @@ class Command(BaseCommand):
             article = record.search_run.article
             candidate = _candidate_as_search_candidate(record)
             match = compare_titles(article.title, candidate)
+            if not _candidate_meets_retention_threshold(match=match):
+                if prune_below_threshold and record.reason_code.startswith("AUTO_REPOST_SITE_DOMAIN:"):
+                    counts["below_threshold_pruned"] += 1
+                    changed += 1
+                    if not dry_run:
+                        self._prune_automatic_candidate(record)
+                        changed_runs.add(record.search_run_id)
+                continue
             site = automatic_repost_site_for_candidate(candidate)
             relation, owned_channel, reason = classify_owned_channel(candidate)
             if relation != ContentRelation.OWNED and site is None:
@@ -107,3 +122,30 @@ class Command(BaseCommand):
         mode = "DRY-RUN" if dry_run else "APPLIED"
         summary = " ".join(f"{code}={count}" for code, count in sorted(counts.items()))
         self.stdout.write(f"{mode}: changed={changed} {summary}".strip())
+
+    @staticmethod
+    def _prune_automatic_candidate(record: SearchRunCandidate) -> None:
+        """Delete an invalid automatic candidate without revoking manual evidence."""
+        article = record.search_run.article
+        canonical_url_hash = record.canonical_url_hash
+        remaining = SearchRunCandidate.objects.filter(
+            search_run__article=article,
+            canonical_url_hash=canonical_url_hash,
+        ).exclude(pk=record.pk)
+        has_manual_confirmation = remaining.filter(reason_code="MANUAL_REPOST").exists()
+        has_retained_automatic_confirmation = False
+        for related in remaining.select_related("search_run__article"):
+            related_match = compare_titles(related.search_run.article.title, _candidate_as_search_candidate(related))
+            if _candidate_meets_retention_threshold(match=related_match):
+                has_retained_automatic_confirmation = True
+                break
+
+        record.delete()
+        if has_manual_confirmation or has_retained_automatic_confirmation:
+            return
+        RepostRecord.objects.filter(
+            article=article,
+            canonical_url_hash=canonical_url_hash,
+            content_relation=ContentRelation.REPOST,
+            classification_reason__startswith="AUTO_REPOST_SITE_DOMAIN:",
+        ).delete()
