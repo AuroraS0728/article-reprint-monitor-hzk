@@ -6,6 +6,7 @@ from typing import cast
 from urllib.parse import quote
 
 from django.conf import settings
+from django.db.models import OuterRef, Subquery
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -162,13 +163,18 @@ class ArticleDiscoveredPublicationView(APIView):
             is_valid=True, content_relation="REPOST", created_at__lte=as_of
         ).select_related("owned_channel", "platform")
         runs = article.search_runs.order_by("-created_at", "-id")[:100]
+        eligible_candidates = SearchRunCandidate.objects.filter(
+            search_run__article=article,
+            published_at__gt=article.published_at,
+            similarity_score__gte=settings.SEARCH_CANDIDATE_MIN_SIMILARITY,
+        ).exclude(content_relation=ContentRelation.OWNED)
+        latest_candidate_id = (
+            eligible_candidates.filter(canonical_url=OuterRef("canonical_url"))
+            .order_by("-search_run__created_at", "-id")
+            .values("id")[:1]
+        )
         candidates = (
-            SearchRunCandidate.objects.filter(
-                search_run__article=article,
-                published_at__gt=article.published_at,
-                similarity_score__gte=settings.SEARCH_CANDIDATE_MIN_SIMILARITY,
-            )
-            .exclude(content_relation=ContentRelation.OWNED)
+            eligible_candidates.filter(pk=Subquery(latest_candidate_id))
             .select_related("search_run", "owned_channel")
             .order_by("-search_run__created_at", "-id")[:500]
         )

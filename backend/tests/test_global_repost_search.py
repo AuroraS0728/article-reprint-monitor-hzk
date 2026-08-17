@@ -362,6 +362,28 @@ def test_search_only_retains_late_candidates_at_or_above_eighty_percent(source: 
 
 
 @pytest.mark.django_db
+def test_article_candidate_detail_shows_one_latest_row_per_canonical_url(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    candidate = SearchCandidate(
+        title=article.title,
+        url="https://news.example.com/only-once?utm_source=first",
+        published_at=article.published_at + timedelta(minutes=1),
+    )
+    first_run = search_article(article, provider=StaticProvider([candidate]))
+    second_run = search_article(article, provider=StaticProvider([candidate]))
+    client = APIClient()
+    client.force_authenticate(operator)
+
+    response = client.get(f"/api/v1/articles/{article.id}/discovered-publications")
+
+    assert response.status_code == 200
+    rows = response.json()["data"]["candidates"]
+    assert [row["canonical_url"] for row in rows] == ["https://news.example.com/only-once"]
+    assert rows[0]["search_run_id"] == second_run.id
+    assert SearchRunCandidate.objects.filter(search_run__in=[first_run, second_run]).count() == 2
+
+
+@pytest.mark.django_db
 @override_settings(SEARCH_SIMILARITY_THRESHOLD=101)
 def test_operator_can_review_candidate_as_external_repost_and_audit_is_recorded(source: Source, operator: User) -> None:
     article = create_source_article(source=source, operator=operator)
