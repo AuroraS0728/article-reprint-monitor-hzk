@@ -489,6 +489,19 @@ def test_operator_can_send_candidate_to_reading_module_without_repost_export(sou
 
 
 @pytest.mark.django_db
+def test_reading_module_exposes_manual_other_owned_channel(operator: User) -> None:
+    client = APIClient()
+    client.force_authenticate(operator)
+
+    response = client.get("/api/v1/reading-monitor/owned-publications")
+
+    assert response.status_code == 200
+    channels = response.json()["data"]["channels"]
+    assert {channel["code"] for channel in channels} >= {"OTHER"}
+    assert next(channel for channel in channels if channel["code"] == "OTHER")["name"] == "其他"
+
+
+@pytest.mark.django_db
 @override_settings(SEARCH_SIMILARITY_THRESHOLD=101)
 def test_candidate_review_requires_operator_or_administrator(source: Source, operator: User) -> None:
     article = create_source_article(source=source, operator=operator)
