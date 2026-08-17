@@ -127,7 +127,7 @@ def test_targeted_crawl_claim_submit_candidates_and_complete(source: Source, ope
 
 
 @pytest.mark.django_db
-def test_targeted_crawl_does_not_store_candidates_without_late_time_or_eighty_percent_similarity(
+def test_targeted_crawl_retains_high_similarity_candidates_without_publication_time(
     source: Source, operator: User, article: Article
 ) -> None:
     source_token = create_source_token(source=source, name="candidate-filter", created_by=operator)
@@ -165,8 +165,12 @@ def test_targeted_crawl_does_not_store_candidates_without_late_time_or_eighty_pe
     )
 
     assert response.status_code == 201
-    assert [item["canonical_url"] for item in response.json()["data"]] == ["https://external.example.net/retained"]
-    assert SearchRun.objects.get(pk=claim["run_id"]).candidates.count() == 1
+    assert [item["canonical_url"] for item in response.json()["data"]] == [
+        "https://external.example.net/no-date",
+        "https://external.example.net/same-date",
+        "https://external.example.net/retained",
+    ]
+    assert SearchRun.objects.get(pk=claim["run_id"]).candidates.count() == 3
 
 
 @pytest.mark.django_db

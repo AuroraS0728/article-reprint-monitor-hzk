@@ -331,7 +331,7 @@ def test_search_run_candidates_are_available_to_authenticated_readers(source: So
 
 
 @pytest.mark.django_db
-def test_search_only_retains_late_candidates_at_or_above_eighty_percent(source: Source, operator: User) -> None:
+def test_search_retains_high_similarity_candidates_without_publication_time(source: Source, operator: User) -> None:
     article = create_source_article(source=source, operator=operator)
     later = article.published_at + timedelta(minutes=1)
     run = search_article(
@@ -355,10 +355,25 @@ def test_search_only_retains_late_candidates_at_or_above_eighty_percent(source: 
     )
 
     retained = SearchRunCandidate.objects.filter(search_run=run)
-    assert list(retained.values_list("canonical_url", flat=True)) == ["https://news.example.com/late"]
-    assert run.exact_candidate_count == 1
-    assert run.broad_candidate_count == 1
-    assert run.merged_candidate_count == 1
+    assert list(retained.values_list("canonical_url", flat=True)) == [
+        "https://news.example.com/late",
+        "https://news.example.com/same-time",
+        "https://news.example.com/no-time",
+    ]
+    assert run.exact_candidate_count == 3
+    assert run.broad_candidate_count == 3
+    assert run.merged_candidate_count == 3
+
+    client = APIClient()
+    client.force_authenticate(operator)
+    response = client.get(f"/api/v1/articles/{article.id}/discovered-publications")
+
+    assert response.status_code == 200
+    assert {row["canonical_url"] for row in response.json()["data"]["candidates"]} == {
+        "https://news.example.com/late",
+        "https://news.example.com/same-time",
+        "https://news.example.com/no-time",
+    }
 
 
 @pytest.mark.django_db

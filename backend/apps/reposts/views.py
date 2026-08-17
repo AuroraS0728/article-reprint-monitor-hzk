@@ -165,7 +165,6 @@ class ArticleDiscoveredPublicationView(APIView):
         runs = article.search_runs.order_by("-created_at", "-id")[:100]
         eligible_candidates = SearchRunCandidate.objects.filter(
             search_run__article=article,
-            published_at__gt=article.published_at,
             similarity_score__gte=settings.SEARCH_CANDIDATE_MIN_SIMILARITY,
         ).exclude(content_relation=ContentRelation.OWNED)
         latest_candidate_id = (

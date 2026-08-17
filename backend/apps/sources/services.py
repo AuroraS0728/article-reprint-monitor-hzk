@@ -612,22 +612,17 @@ def _next_search_time(article: Article, now: datetime) -> datetime | None:
     return min(candidate, article.monitor_until)
 
 
-def _candidate_is_eligible_for_retention(*, article: Article, candidate: SearchCandidate, match: TitleMatch) -> bool:
-    """Keep only actionable candidate links.
+def _candidate_meets_retention_threshold(*, match: TitleMatch) -> bool:
+    """Keep searchable candidates that meet the human-review threshold.
 
-    Provider search responses can be broad and are not an audit archive. A result is
-    actionable only when its title is at least the configured candidate threshold and
-    the provider supplied a publication time that is strictly later than the original.
-    Scores from 80 to 89 remain available for human review, but cannot become reposts
-    automatically because the final match threshold is evaluated separately.
+    Search providers do not consistently return a trustworthy publication time. The
+    candidate list therefore uses title similarity alone: scores at or above the
+    configured threshold are retained even when the result time is missing, equal to,
+    or earlier than the original. Automatic repost confirmation remains governed by
+    the separate, higher final-match threshold.
     """
 
-    return bool(
-        article.published_at
-        and candidate.published_at
-        and candidate.published_at > article.published_at
-        and match.similarity_score >= settings.SEARCH_CANDIDATE_MIN_SIMILARITY
-    )
+    return match.similarity_score >= settings.SEARCH_CANDIDATE_MIN_SIMILARITY
 
 
 @transaction.atomic
@@ -1086,7 +1081,7 @@ def _classify_targeted_crawl_candidate(
 ) -> tuple[SearchRunCandidate | None, bool]:
     article = task.article
     match = compare_titles(article.title, candidate)
-    if not _candidate_is_eligible_for_retention(article=article, candidate=candidate, match=match):
+    if not _candidate_meets_retention_threshold(match=match):
         return None, False
 
     canonical_url = canonicalize_http_url(candidate.url)
@@ -1462,7 +1457,7 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
                             raw_data=candidate.raw_data,
                         )
                     match = compare_titles(article.title, candidate)
-                    if not _candidate_is_eligible_for_retention(article=article, candidate=candidate, match=match):
+                    if not _candidate_meets_retention_threshold(match=match):
                         continue
                     try:
                         canonical = canonicalize_http_url(candidate.url)
