@@ -914,6 +914,30 @@ def test_reclassification_never_confirms_or_keeps_automatic_candidate_below_rete
 
 
 @pytest.mark.django_db
+def test_reclassification_prunes_historical_unmatched_candidate_below_retention_threshold(
+    source: Source, operator: User
+) -> None:
+    article = create_source_article(source=source, operator=operator)
+    candidate = SearchCandidate(
+        title="与原标题只有少量共同词的无关新闻",
+        url="https://unrelated.example.com/news",
+    )
+    with override_settings(SEARCH_CANDIDATE_MIN_SIMILARITY=0):
+        with patch("apps.sources.services.fuzz.ratio", return_value=75.0):
+            run = search_article(article, provider=RawStaticProvider([candidate]))
+    saved_candidate = SearchRunCandidate.objects.get(search_run=run)
+    assert saved_candidate.reason_code == "TITLE_NOT_MATCHED"
+
+    output = StringIO()
+    with override_settings(SEARCH_CANDIDATE_MIN_SIMILARITY=80):
+        with patch("apps.sources.services.fuzz.ratio", return_value=75.0):
+            call_command("reclassify_automatic_repost_sites", "--prune-below-threshold", stdout=output)
+
+    assert not SearchRunCandidate.objects.filter(search_run=run).exists()
+    assert "below_threshold_pruned=1" in output.getvalue()
+
+
+@pytest.mark.django_db
 @override_settings(SEARCH_SIMILARITY_THRESHOLD=90, SEARCH_CANDIDATE_MIN_SIMILARITY=80)
 def test_caifuhao_subdomain_is_auto_classified_as_owned_reading_channel(source: Source, operator: User) -> None:
     article = create_source_article(source=source, operator=operator)

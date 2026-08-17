@@ -42,12 +42,18 @@ class Command(BaseCommand):
             candidate = _candidate_as_search_candidate(record)
             match = compare_titles(article.title, candidate)
             if not _candidate_meets_retention_threshold(match=match):
-                if prune_below_threshold and record.reason_code.startswith("AUTO_REPOST_SITE_DOMAIN:"):
+                is_automatic_repost = record.reason_code.startswith("AUTO_REPOST_SITE_DOMAIN:")
+                is_unmatched_candidate = record.reason_code == "TITLE_NOT_MATCHED"
+                if prune_below_threshold and (is_automatic_repost or is_unmatched_candidate):
+                    run_id = record.search_run_id
                     counts["below_threshold_pruned"] += 1
                     changed += 1
                     if not dry_run:
-                        self._prune_automatic_candidate(record)
-                        changed_runs.add(record.search_run_id)
+                        if is_automatic_repost:
+                            self._prune_automatic_candidate(record)
+                        else:
+                            record.delete()
+                        changed_runs.add(run_id)
                 continue
             site = automatic_repost_site_for_candidate(candidate)
             relation, owned_channel, reason = classify_owned_channel(candidate)
