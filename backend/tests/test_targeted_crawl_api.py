@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from django.utils import timezone
@@ -10,7 +11,7 @@ from apps.accounts.models import Role, User
 from apps.articles.models import Article, ArticleMonitoringStatus, ArticleStatus
 from apps.articles.services import normalize_title
 from apps.reposts.models import ContentRelation, RepostRecord
-from apps.sources.models import SearchRun, SearchRunStatus, Source, TargetedCrawlTask
+from apps.sources.models import AutomaticRepostSite, SearchRun, SearchRunStatus, Source, TargetedCrawlTask
 from apps.sources.token_services import create_source_token
 
 
@@ -171,6 +172,45 @@ def test_targeted_crawl_retains_high_similarity_candidates_without_publication_t
         "https://external.example.net/retained",
     ]
     assert SearchRun.objects.get(pk=claim["run_id"]).candidates.count() == 3
+
+
+@pytest.mark.django_db
+def test_targeted_crawl_auto_confirms_configured_media_site_at_candidate_threshold(
+    source: Source, operator: User, article: Article
+) -> None:
+    AutomaticRepostSite.objects.create(
+        code="TARGETED_AUTO_MEDIA",
+        name="Targeted automatic media",
+        domains=["targeted-media.example.com"],
+    )
+    token = create_source_token(source=source, name="auto-media", created_by=operator)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.plaintext}")
+    task = client.get("/api/v1/targeted-crawl/tasks").json()["data"]["tasks"][0]
+    claim = client.post(f"/api/v1/targeted-crawl/tasks/{task['id']}/claim", {}, format="json").json()["data"]
+
+    with patch("apps.sources.services.fuzz.ratio", return_value=85.0):
+        response = client.post(
+            "/api/v1/targeted-crawl/candidates",
+            {
+                "task_id": task["id"],
+                "run_id": claim["run_id"],
+                "claim_token": claim["claim_token"],
+                "candidates": [
+                    {
+                        "title": "Targeted crawl known repost title report",
+                        "url": "https://targeted-media.example.com/repost",
+                    }
+                ],
+            },
+            format="json",
+        )
+
+    assert response.status_code == 201
+    candidate = response.json()["data"][0]
+    assert candidate["content_relation"] == ContentRelation.REPOST
+    assert candidate["reason_code"] == "AUTO_REPOST_SITE_DOMAIN:TARGETED_AUTO_MEDIA"
+    assert RepostRecord.objects.filter(article=article, content_relation=ContentRelation.REPOST).exists()
 
 
 @pytest.mark.django_db

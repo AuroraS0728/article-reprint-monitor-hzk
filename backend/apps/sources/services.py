@@ -38,6 +38,7 @@ from search_providers.types import SearchCandidate
 from .models import (
     ArticleIngestConflict,
     ArticleIngestConflictStatus,
+    AutomaticRepostSite,
     OwnedChannel,
     SearchCandidateDisposition,
     SearchProviderConfiguration,
@@ -774,6 +775,27 @@ def _host_matches(host: str, patterns: set[str], *, exact: bool = False) -> bool
     return any(host == pattern or (not exact and host.endswith(f".{pattern}")) for pattern in patterns)
 
 
+def automatic_repost_site_for_candidate(
+    candidate: SearchCandidate, *, sites: list[AutomaticRepostSite] | None = None
+) -> AutomaticRepostSite | None:
+    """Return the enabled media rule matching a public candidate hostname.
+
+    The site list is stored in the database so an administrator can disable a
+    rule without changing search code.  Matching is hostname-only: URLs still
+    have to pass canonicalisation and the configured candidate title threshold.
+    """
+
+    host = (candidate.domain or urlsplit(candidate.url).hostname or "").casefold().rstrip(".")
+    if not host:
+        return None
+    configured_sites = sites if sites is not None else list(AutomaticRepostSite.objects.filter(is_active=True))
+    for site in configured_sites:
+        domains = {str(value).strip().casefold().rstrip(".") for value in site.domains if str(value).strip()}
+        if _host_matches(host, domains):
+            return site
+    return None
+
+
 def classify_owned_channel(
     candidate: SearchCandidate, *, channels: list[OwnedChannel] | None = None
 ) -> tuple[str, OwnedChannel | None, str]:
@@ -1091,7 +1113,14 @@ def _classify_targeted_crawl_candidate(
         return None, False
 
     record = _persist_search_candidate(run=run, canonical_url=canonical_url, candidate=candidate, phase=phase)
-    if not match.matched:
+    relation, owned_channel, reason = classify_owned_channel(candidate)
+    automatic_site = automatic_repost_site_for_candidate(candidate)
+    automatic_repost_reason = (
+        f"AUTO_REPOST_SITE_DOMAIN:{automatic_site.code}"
+        if automatic_site is not None and relation != ContentRelation.OWNED
+        else None
+    )
+    if not match.matched and automatic_repost_reason is None:
         _classify_search_candidate(
             record,
             disposition=SearchCandidateDisposition.NOT_MATCHED,
@@ -1100,7 +1129,10 @@ def _classify_targeted_crawl_candidate(
         )
         return record, False
 
-    relation, owned_channel, reason = classify_owned_channel(candidate)
+    if automatic_repost_reason is not None:
+        relation = ContentRelation.REPOST
+        owned_channel = None
+        reason = automatic_repost_reason
     _classify_search_candidate(
         record,
         disposition=SearchCandidateDisposition.MATCHED,
@@ -1503,24 +1535,41 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
         repost_count = 0
         review_count = 0
         owned_channels = list(OwnedChannel.objects.filter(is_active=True))
+        automatic_repost_sites = list(AutomaticRepostSite.objects.filter(is_active=True))
         for canonical, candidate in all_candidates.items():
             candidate_record = SearchRunCandidate.objects.get(
                 search_run=run,
                 canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
             )
             match = compare_titles(article.title, candidate)
+            relation, owned_channel, classification_reason = classify_owned_channel(candidate, channels=owned_channels)
+            automatic_site = automatic_repost_site_for_candidate(candidate, sites=automatic_repost_sites)
+            automatic_repost_reason = (
+                f"AUTO_REPOST_SITE_DOMAIN:{automatic_site.code}"
+                if automatic_site is not None and relation != ContentRelation.OWNED
+                else None
+            )
             _classify_search_candidate(
                 candidate_record,
                 disposition=(
-                    SearchCandidateDisposition.MATCHED if match.matched else SearchCandidateDisposition.NOT_MATCHED
+                    SearchCandidateDisposition.MATCHED
+                    if match.matched or automatic_repost_reason is not None
+                    else SearchCandidateDisposition.NOT_MATCHED
                 ),
                 similarity_score=match.similarity_score,
-                reason_code="TITLE_MATCH" if match.matched else "TITLE_NOT_MATCHED",
+                reason_code=(
+                    automatic_repost_reason
+                    if automatic_repost_reason is not None
+                    else "TITLE_MATCH" if match.matched else "TITLE_NOT_MATCHED"
+                ),
             )
-            if not match.matched:
+            if not match.matched and automatic_repost_reason is None:
                 continue
             matched_count += 1
-            relation, owned_channel, classification_reason = classify_owned_channel(candidate, channels=owned_channels)
+            if automatic_repost_reason is not None:
+                relation = ContentRelation.REPOST
+                owned_channel = None
+                classification_reason = automatic_repost_reason
             _classify_search_candidate(
                 candidate_record,
                 disposition=SearchCandidateDisposition.MATCHED,

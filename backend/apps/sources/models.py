@@ -56,6 +56,31 @@ class OwnedChannel(models.Model):
         return f"{self.code} - {self.name}"
 
 
+class AutomaticRepostSite(models.Model):
+    """Database-managed media-site rule for low-touch repost confirmation.
+
+    This is deliberately separate from ``OwnedChannel``: the latter takes
+    precedence when it positively identifies first-party distribution.  A site
+    here may confirm an otherwise reviewable title match at the candidate
+    threshold, but never supplies a browser adapter or a search credential.
+    """
+
+    code = models.CharField(max_length=64, unique=True, validators=[source_code_validator])
+    name = models.CharField(max_length=100, unique=True)
+    domains = models.JSONField(default=list)
+    is_active = models.BooleanField(default=True, db_index=True)
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "sources_automatic_repost_site"
+        ordering = ["code"]
+
+    def __str__(self) -> str:
+        return f"{self.code} - {self.name}"
+
+
 class SearchProviderConfiguration(models.Model):
     """Database-managed provider order. API credentials stay in server secrets."""
 

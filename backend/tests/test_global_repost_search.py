@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from hashlib import sha256
-from io import BytesIO
+from io import BytesIO, StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from django.core.management import call_command
 from django.test import override_settings
 from django.utils import timezone
 from openpyxl import load_workbook
@@ -31,6 +32,7 @@ from apps.reposts.query_services import (
     result_summary,
 )
 from apps.sources.models import (
+    AutomaticRepostSite,
     OwnedChannel,
     SearchCandidateDisposition,
     SearchProviderConfiguration,
@@ -805,6 +807,75 @@ def test_owned_channel_requires_configured_account_evidence_and_external_is_repo
     assert run.repost_count == 1
     assert RepostRecord.objects.filter(article=article, content_relation=ContentRelation.OWNED).count() == 1
     assert RepostRecord.objects.filter(article=article, content_relation=ContentRelation.REPOST).count() == 1
+
+
+@pytest.mark.django_db
+@override_settings(SEARCH_SIMILARITY_THRESHOLD=90, SEARCH_CANDIDATE_MIN_SIMILARITY=80)
+def test_configured_media_site_auto_confirms_candidate_threshold_and_keeps_confirmed_owned_priority(
+    source: Source, operator: User
+) -> None:
+    article = create_source_article(source=source, operator=operator)
+    AutomaticRepostSite.objects.create(
+        code="AUTO_MEDIA",
+        name="自动转载媒体",
+        domains=["auto-media.example.com"],
+    )
+    OwnedChannel.objects.create(
+        code="AUTO_MEDIA_OWNED",
+        name="自动转载媒体自有账号",
+        channel_type="PLATFORM_ACCOUNT",
+        match_rules={"platform_domains": ["auto-media.example.com"], "account_names": ["证券市场周刊"]},
+    )
+    external = SearchCandidate(
+        title="这一主线再掀涨停潮低位方向正在成为新主角报道",
+        url="https://auto-media.example.com/repost",
+        site_name="自动转载媒体",
+    )
+    owned = SearchCandidate(
+        title="这一主线再掀涨停潮低位方向正在成为新主角报道",
+        url="https://auto-media.example.com/owned",
+        site_name="自动转载媒体",
+        raw_data={"account_name": "证券市场周刊"},
+    )
+
+    with patch("apps.sources.services.fuzz.ratio", return_value=85.0):
+        run = search_article(article, provider=RawStaticProvider([external, owned]))
+
+    repost = RepostRecord.objects.get(article=article, canonical_url__contains="/repost")
+    assert repost.content_relation == ContentRelation.REPOST
+    assert repost.classification_reason == "AUTO_REPOST_SITE_DOMAIN:AUTO_MEDIA"
+    # A positively identified first-party account is never auto-counted as a repost.
+    assert not RepostRecord.objects.filter(article=article, canonical_url__contains="/owned").exists()
+    assert run.repost_count == 1
+    assert run.matched_count == 1
+
+
+@pytest.mark.django_db
+@override_settings(SEARCH_SIMILARITY_THRESHOLD=90, SEARCH_CANDIDATE_MIN_SIMILARITY=80)
+def test_auto_repost_reclassification_promotes_retained_historical_candidates(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    candidate = SearchCandidate(
+        title="这一主线再掀涨停潮低位方向正在成为新主角报道",
+        url="https://historical-auto-media.example.com/repost",
+    )
+    with patch("apps.sources.services.fuzz.ratio", return_value=85.0):
+        run = search_article(article, provider=RawStaticProvider([candidate]))
+    assert not RepostRecord.objects.filter(article=article).exists()
+
+    AutomaticRepostSite.objects.create(
+        code="HISTORICAL_AUTO_MEDIA",
+        name="历史自动转载媒体",
+        domains=["historical-auto-media.example.com"],
+    )
+    output = StringIO()
+    with patch("apps.sources.services.fuzz.ratio", return_value=85.0):
+        call_command("reclassify_automatic_repost_sites", stdout=output)
+
+    saved = RepostRecord.objects.get(article=article)
+    assert saved.content_relation == ContentRelation.REPOST
+    assert saved.classification_reason == "AUTO_REPOST_SITE_DOMAIN:HISTORICAL_AUTO_MEDIA"
+    assert SearchRunCandidate.objects.get(search_run=run).content_relation == ContentRelation.REPOST
+    assert "APPLIED: changed=1" in output.getvalue()
 
 
 @pytest.mark.django_db

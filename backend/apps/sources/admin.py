@@ -3,6 +3,7 @@ from django.http import HttpRequest
 
 from .models import (
     ArticleIngestConflict,
+    AutomaticRepostSite,
     OwnedChannel,
     SearchProviderConfiguration,
     SearchRun,
@@ -78,6 +79,13 @@ class SearchProviderConfigurationAdmin(admin.ModelAdmin):
 class OwnedChannelAdmin(admin.ModelAdmin):
     list_display = ("code", "name", "channel_type", "is_active", "updated_at")
     list_filter = ("channel_type", "is_active")
+    search_fields = ("code", "name", "notes")
+
+
+@admin.register(AutomaticRepostSite)
+class AutomaticRepostSiteAdmin(admin.ModelAdmin):
+    list_display = ("code", "name", "is_active", "updated_at")
+    list_filter = ("is_active",)
     search_fields = ("code", "name", "notes")
 
 
