@@ -214,7 +214,13 @@ class ArticleDiscoveredPublicationView(APIView):
                         "disposition": candidate.disposition,
                         "similarity_score": candidate.similarity_score,
                         "content_relation": candidate.content_relation,
+                        "owned_channel_id": candidate.owned_channel_id,
                         "owned_channel_name": candidate.owned_channel.name if candidate.owned_channel else None,
+                        "manual_review_action": (
+                            "CONFIRM_REPOST"
+                            if candidate.reason_code == "MANUAL_REPOST"
+                            else "CONFIRM_OWNED" if candidate.reason_code == "MANUAL_OWNED" else None
+                        ),
                         "classification_reason": candidate.classification_reason or candidate.reason_code,
                     }
                     for candidate in candidates

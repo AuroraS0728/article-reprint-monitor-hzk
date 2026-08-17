@@ -1287,8 +1287,13 @@ def review_search_candidate(
             if owned_channel is None:
                 raise ValueError("指定的自有渠道不存在或已停用。")
             relation = ContentRelation.OWNED
-            if existing and existing.content_relation == ContentRelation.REPOST and existing.is_valid:
-                raise ValueError("已确认的外部转载不能被静默改为自有分发。")
+            if (
+                existing
+                and existing.content_relation == ContentRelation.REPOST
+                and existing.is_valid
+                and candidate.reason_code != "MANUAL_REPOST"
+            ):
+                raise ValueError("系统确认的外部转载不能通过候选复核改为自有分发。")
         elif action != "CONFIRM_REPOST":
             raise ValueError("不支持的候选复核动作。")
 

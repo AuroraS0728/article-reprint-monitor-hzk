@@ -489,6 +489,69 @@ def test_operator_can_send_candidate_to_reading_module_without_repost_export(sou
 
 
 @pytest.mark.django_db
+@override_settings(SEARCH_SIMILARITY_THRESHOLD=101)
+def test_operator_can_switch_between_manual_repost_and_owned_reviews(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    channel = OwnedChannel.objects.create(
+        code="CHANGE_REVIEW_TO_OWNED",
+        name="修改复核自有渠道",
+        channel_type="PLATFORM_ACCOUNT",
+        match_rules={"platform_domains": ["change-review.example.com"]},
+    )
+    run = search_article(
+        article,
+        provider=StaticProvider([SearchCandidate(title=article.title, url="https://change-review.example.com/a")]),
+    )
+    candidate = SearchRunCandidate.objects.get(search_run=run)
+    client = APIClient()
+    client.force_authenticate(operator)
+
+    confirmed = client.post(
+        f"/api/v1/search-candidates/{candidate.id}/review",
+        {"action": "CONFIRM_REPOST", "reason": "人工确认外部转载"},
+        format="json",
+    )
+    changed = client.post(
+        f"/api/v1/search-candidates/{candidate.id}/review",
+        {"action": "CONFIRM_OWNED", "reason": "复核后改为自有渠道", "owned_channel_id": channel.id},
+        format="json",
+    )
+
+    assert confirmed.status_code == 200
+    assert changed.status_code == 200
+    candidate.refresh_from_db()
+    record = RepostRecord.objects.get(article=article, canonical_url_hash=candidate.canonical_url_hash)
+    assert candidate.reason_code == "MANUAL_OWNED"
+    assert candidate.content_relation == ContentRelation.OWNED
+    assert candidate.owned_channel_id == channel.id
+    assert record.content_relation == ContentRelation.OWNED
+    assert record.owned_channel_id == channel.id
+
+    changed_back = client.post(
+        f"/api/v1/search-candidates/{candidate.id}/review",
+        {"action": "CONFIRM_REPOST", "reason": "再次复核后改回外部转载"},
+        format="json",
+    )
+
+    assert changed_back.status_code == 200
+    candidate.refresh_from_db()
+    record.refresh_from_db()
+    assert candidate.reason_code == "MANUAL_REPOST"
+    assert candidate.content_relation == ContentRelation.REPOST
+    assert candidate.owned_channel_id is None
+    assert record.content_relation == ContentRelation.REPOST
+    assert record.owned_channel_id is None
+    detail = client.get(f"/api/v1/articles/{article.id}/discovered-publications")
+    assert detail.status_code == 200
+    row = detail.json()["data"]["candidates"][0]
+    assert row["manual_review_action"] == "CONFIRM_REPOST"
+    assert row["owned_channel_id"] is None
+    audits = OperationLog.objects.filter(action_type="SEARCH_CANDIDATE_REVIEWED", target_id=str(candidate.id))
+    assert audits.count() == 3
+    assert audits.order_by("id").last().after_data["content_relation"] == ContentRelation.REPOST
+
+
+@pytest.mark.django_db
 def test_reading_module_exposes_manual_other_owned_channel(operator: User) -> None:
     client = APIClient()
     client.force_authenticate(operator)
