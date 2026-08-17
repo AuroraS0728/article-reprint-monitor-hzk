@@ -84,6 +84,7 @@ def test_targeted_crawl_claim_submit_candidates_and_complete(source: Source, ope
                     "title": article.title,
                     "url": "https://external.example.net/repost/42?utm_source=search",
                     "site_name": "External news",
+                    "published_at": (article.published_at + timedelta(minutes=1)).isoformat(),
                     "search_phase": "EXACT",
                 }
             ],
@@ -123,6 +124,49 @@ def test_targeted_crawl_claim_submit_candidates_and_complete(source: Source, ope
     assert replay_response.status_code == 403
     assert TargetedCrawlTask.objects.get(pk=task["id"]).last_run_id == claim["run_id"]
     assert SearchRun.objects.get(pk=claim["run_id"]).candidate_count == 1
+
+
+@pytest.mark.django_db
+def test_targeted_crawl_does_not_store_candidates_without_late_time_or_eighty_percent_similarity(
+    source: Source, operator: User, article: Article
+) -> None:
+    source_token = create_source_token(source=source, name="candidate-filter", created_by=operator)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {source_token.plaintext}")
+    task = client.get("/api/v1/targeted-crawl/tasks").json()["data"]["tasks"][0]
+    claim = client.post(f"/api/v1/targeted-crawl/tasks/{task['id']}/claim", {}, format="json").json()["data"]
+
+    response = client.post(
+        "/api/v1/targeted-crawl/candidates",
+        {
+            "task_id": task["id"],
+            "run_id": claim["run_id"],
+            "claim_token": claim["claim_token"],
+            "candidates": [
+                {"title": article.title, "url": "https://external.example.net/no-date"},
+                {
+                    "title": article.title,
+                    "url": "https://external.example.net/same-date",
+                    "published_at": article.published_at.isoformat(),
+                },
+                {
+                    "title": "与原创标题无关",
+                    "url": "https://external.example.net/unrelated",
+                    "published_at": (article.published_at + timedelta(minutes=1)).isoformat(),
+                },
+                {
+                    "title": article.title,
+                    "url": "https://external.example.net/retained",
+                    "published_at": (article.published_at + timedelta(minutes=1)).isoformat(),
+                },
+            ],
+        },
+        format="json",
+    )
+
+    assert response.status_code == 201
+    assert [item["canonical_url"] for item in response.json()["data"]] == ["https://external.example.net/retained"]
+    assert SearchRun.objects.get(pk=claim["run_id"]).candidates.count() == 1
 
 
 @pytest.mark.django_db

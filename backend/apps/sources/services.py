@@ -612,11 +612,21 @@ def _next_search_time(article: Article, now: datetime) -> datetime | None:
     return min(candidate, article.monitor_until)
 
 
-def _candidate_is_too_early(article: Article, candidate: SearchCandidate) -> bool:
-    if not article.published_at or not candidate.published_at:
-        return False
-    return candidate.published_at < article.published_at - timedelta(
-        hours=settings.SEARCH_PUBLISHED_TIME_TOLERANCE_HOURS
+def _candidate_is_eligible_for_retention(*, article: Article, candidate: SearchCandidate, match: TitleMatch) -> bool:
+    """Keep only actionable candidate links.
+
+    Provider search responses can be broad and are not an audit archive. A result is
+    actionable only when its title is at least the configured candidate threshold and
+    the provider supplied a publication time that is strictly later than the original.
+    Scores from 80 to 89 remain available for human review, but cannot become reposts
+    automatically because the final match threshold is evaluated separately.
+    """
+
+    return bool(
+        article.published_at
+        and candidate.published_at
+        and candidate.published_at > article.published_at
+        and match.similarity_score >= settings.SEARCH_CANDIDATE_MIN_SIMILARITY
     )
 
 
@@ -1073,33 +1083,19 @@ def _locked_targeted_crawl_run(
 
 def _classify_targeted_crawl_candidate(
     *, task: TargetedCrawlTask, run: SearchRun, candidate: SearchCandidate, phase: str
-) -> tuple[SearchRunCandidate, bool]:
-    canonical_url = canonicalize_http_url(candidate.url)
-    record = _persist_search_candidate(run=run, canonical_url=canonical_url, candidate=candidate, phase=phase)
+) -> tuple[SearchRunCandidate | None, bool]:
     article = task.article
-    if is_url_for_source(task.source, canonical_url):
-        _classify_search_candidate(
-            record,
-            disposition=SearchCandidateDisposition.EXCLUDED_SOURCE,
-            reason_code="ORIGINAL_SOURCE_URL",
-        )
-        return record, False
-    if article.original_url and canonical_url == canonicalize_http_url(article.original_url):
-        _classify_search_candidate(
-            record,
-            disposition=SearchCandidateDisposition.EXCLUDED_ORIGINAL,
-            reason_code="ORIGINAL_URL",
-        )
-        return record, False
-    if _candidate_is_too_early(article, candidate):
-        _classify_search_candidate(
-            record,
-            disposition=SearchCandidateDisposition.EXCLUDED_TOO_EARLY,
-            reason_code="PUBLISHED_TOO_EARLY",
-        )
-        return record, False
-
     match = compare_titles(article.title, candidate)
+    if not _candidate_is_eligible_for_retention(article=article, candidate=candidate, match=match):
+        return None, False
+
+    canonical_url = canonicalize_http_url(candidate.url)
+    if is_url_for_source(task.source, canonical_url):
+        return None, False
+    if article.original_url and canonical_url == canonicalize_http_url(article.original_url):
+        return None, False
+
+    record = _persist_search_candidate(run=run, canonical_url=canonical_url, candidate=candidate, phase=phase)
     if not match.matched:
         _classify_search_candidate(
             record,
@@ -1164,7 +1160,8 @@ def submit_targeted_crawl_candidates(
             candidate=candidate,
             phase=str(item.get("search_phase", "EXACT")),
         )
-        persisted.append(record)
+        if record is not None:
+            persisted.append(record)
         new_repost_count += int(created)
     if new_repost_count:
         run.new_repost_count += new_repost_count
@@ -1451,7 +1448,6 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
                     continue
                 provider_had_success = True
                 successful_provider_calls += 1
-                stage_counts[phase] += len(candidates)
                 for candidate in candidates:
                     if not candidate.provider:
                         candidate = SearchCandidate(
@@ -1465,13 +1461,19 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
                             site_name=candidate.site_name,
                             raw_data=candidate.raw_data,
                         )
+                    match = compare_titles(article.title, candidate)
+                    if not _candidate_is_eligible_for_retention(article=article, candidate=candidate, match=match):
+                        continue
                     try:
                         canonical = canonicalize_http_url(candidate.url)
                     except ValueError:
                         continue
+                    if article.original_url and canonical == canonicalize_http_url(article.original_url):
+                        continue
                     if canonical not in all_candidates:
                         all_candidates[canonical] = candidate
                     _persist_search_candidate(run=run, canonical_url=canonical, candidate=candidate, phase=phase)
+                    stage_counts[phase] += 1
 
                 # Persist each provider response so URLs remain visible while the next source runs.
                 run.candidate_count = len(all_candidates)
@@ -1506,20 +1508,6 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
                 search_run=run,
                 canonical_url_hash=sha256(canonical.encode("utf-8")).hexdigest(),
             )
-            if article.original_url and canonical == canonicalize_http_url(article.original_url):
-                _classify_search_candidate(
-                    candidate_record,
-                    disposition=SearchCandidateDisposition.EXCLUDED_ORIGINAL,
-                    reason_code="ORIGINAL_URL",
-                )
-                continue
-            if _candidate_is_too_early(article, candidate):
-                _classify_search_candidate(
-                    candidate_record,
-                    disposition=SearchCandidateDisposition.EXCLUDED_TOO_EARLY,
-                    reason_code="PUBLISHED_TOO_EARLY",
-                )
-                continue
             match = compare_titles(article.title, candidate)
             _classify_search_candidate(
                 candidate_record,

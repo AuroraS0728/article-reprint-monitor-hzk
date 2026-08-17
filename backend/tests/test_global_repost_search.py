@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from hashlib import sha256
 from io import BytesIO
@@ -61,6 +61,24 @@ class StaticProvider:
     code: str = "test-provider"
 
     def search(self, query: str, **kwargs: object) -> list[SearchCandidate]:
+        return [
+            (
+                candidate
+                if candidate.published_at is not None
+                else replace(candidate, published_at=timezone.now() + timedelta(minutes=1))
+            )
+            for candidate in self.candidates
+        ]
+
+
+@dataclass
+class RawStaticProvider:
+    """Returns provider data unchanged for retention-gate tests."""
+
+    candidates: list[SearchCandidate]
+    code: str = "raw-test-provider"
+
+    def search(self, query: str, **kwargs: object) -> list[SearchCandidate]:
         return list(self.candidates)
 
 
@@ -88,7 +106,14 @@ class PerStageProvider:
         response = self.responses[query]
         if isinstance(response, Exception):
             raise response
-        return response
+        return [
+            (
+                candidate
+                if candidate.published_at is not None
+                else replace(candidate, published_at=timezone.now() + timedelta(minutes=1))
+            )
+            for candidate in response
+        ]
 
 
 class InspectingProvider:
@@ -102,14 +127,28 @@ class InspectingProvider:
     def search(self, query: str, **kwargs: object) -> list[SearchCandidate]:
         self.calls += 1
         if self.calls == 1:
-            return [SearchCandidate(title="第一批候选", url="https://example.com/first", site_name="示例站")]
+            return [
+                SearchCandidate(
+                    title="第一批候选",
+                    url="https://example.com/first",
+                    site_name="示例站",
+                    published_at=timezone.now() + timedelta(minutes=1),
+                )
+            ]
 
         run = SearchRun.objects.latest("id")
         candidate = SearchRunCandidate.objects.get(search_run=run)
         assert run.status == SearchRunStatus.RUNNING
         assert run.candidate_count == 1
         assert candidate.disposition == SearchCandidateDisposition.PENDING
-        return [SearchCandidate(title="第二批候选", url="https://example.com/second", site_name="示例站")]
+        return [
+            SearchCandidate(
+                title="第二批候选",
+                url="https://example.com/second",
+                site_name="示例站",
+                published_at=timezone.now() + timedelta(minutes=1),
+            )
+        ]
 
 
 @pytest.fixture
@@ -278,7 +317,7 @@ def test_search_run_candidates_are_available_to_authenticated_readers(source: So
     run = search_article(
         article,
         provider=StaticProvider(
-            [SearchCandidate(title="候选页", url="https://finance.example.com/a", site_name="示例财经")]
+            [SearchCandidate(title=article.title, url="https://finance.example.com/a", site_name="示例财经")]
         ),
     )
     client = APIClient()
@@ -286,12 +325,44 @@ def test_search_run_candidates_are_available_to_authenticated_readers(source: So
     response = client.get(f"/api/v1/global-search-runs/{run.id}/candidates")
     assert response.status_code == 200
     candidate = response.json()["data"][0]
-    assert candidate["title"] == "候选页"
+    assert candidate["title"] == article.title
     assert candidate["site_name"] == "示例财经"
     assert candidate["canonical_url"] == "https://finance.example.com/a"
 
 
 @pytest.mark.django_db
+def test_search_only_retains_late_candidates_at_or_above_eighty_percent(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    later = article.published_at + timedelta(minutes=1)
+    run = search_article(
+        article,
+        provider=RawStaticProvider(
+            [
+                SearchCandidate(title=article.title, url="https://news.example.com/late", published_at=later),
+                SearchCandidate(
+                    title=article.title,
+                    url="https://news.example.com/same-time",
+                    published_at=article.published_at,
+                ),
+                SearchCandidate(title=article.title, url="https://news.example.com/no-time"),
+                SearchCandidate(
+                    title="与原创标题没有关联的搜索结果",
+                    url="https://news.example.com/unrelated",
+                    published_at=later,
+                ),
+            ]
+        ),
+    )
+
+    retained = SearchRunCandidate.objects.filter(search_run=run)
+    assert list(retained.values_list("canonical_url", flat=True)) == ["https://news.example.com/late"]
+    assert run.exact_candidate_count == 1
+    assert run.broad_candidate_count == 1
+    assert run.merged_candidate_count == 1
+
+
+@pytest.mark.django_db
+@override_settings(SEARCH_SIMILARITY_THRESHOLD=101)
 def test_operator_can_review_candidate_as_external_repost_and_audit_is_recorded(source: Source, operator: User) -> None:
     article = create_source_article(source=source, operator=operator)
     run = search_article(
@@ -299,7 +370,7 @@ def test_operator_can_review_candidate_as_external_repost_and_audit_is_recorded(
         provider=StaticProvider(
             [
                 SearchCandidate(
-                    title="人工确认的候选标题",
+                    title=article.title,
                     url="https://manual-review.example.com/a",
                     site_name="人工复核站",
                 )
@@ -328,6 +399,7 @@ def test_operator_can_review_candidate_as_external_repost_and_audit_is_recorded(
 
 
 @pytest.mark.django_db
+@override_settings(SEARCH_SIMILARITY_THRESHOLD=101)
 def test_operator_can_send_candidate_to_reading_module_without_repost_export(source: Source, operator: User) -> None:
     article = create_source_article(source=source, operator=operator)
     channel = OwnedChannel.objects.create(
@@ -339,7 +411,7 @@ def test_operator_can_send_candidate_to_reading_module_without_repost_export(sou
     run = search_article(
         article,
         provider=StaticProvider(
-            [SearchCandidate(title="待人工归类", url="https://owned-review.example.com/a", site_name="自有渠道")]
+            [SearchCandidate(title=article.title, url="https://owned-review.example.com/a", site_name="自有渠道")]
         ),
     )
     candidate = SearchRunCandidate.objects.get(search_run=run)
@@ -380,11 +452,12 @@ def test_operator_can_send_candidate_to_reading_module_without_repost_export(sou
 
 
 @pytest.mark.django_db
+@override_settings(SEARCH_SIMILARITY_THRESHOLD=101)
 def test_candidate_review_requires_operator_or_administrator(source: Source, operator: User) -> None:
     article = create_source_article(source=source, operator=operator)
     run = search_article(
         article,
-        provider=StaticProvider([SearchCandidate(title="复核权限", url="https://review-auth.example.com/a")]),
+        provider=StaticProvider([SearchCandidate(title=article.title, url="https://review-auth.example.com/a")]),
     )
     viewer = User.objects.create_user(username="candidate-viewer", password="A-valid-password-123", role="VIEWER")
     client = APIClient()
@@ -398,6 +471,7 @@ def test_candidate_review_requires_operator_or_administrator(source: Source, ope
 
 
 @pytest.mark.django_db
+@override_settings(SEARCH_CANDIDATE_MIN_SIMILARITY=0)
 def test_search_candidates_are_persisted_while_run_is_still_running(source: Source, operator: User) -> None:
     article = create_source_article(source=source, operator=operator)
     run = search_article(article, provider=InspectingProvider())
@@ -694,6 +768,7 @@ def test_workspace_query_and_trend_exclude_owned_but_keep_sticky_reposts(source:
 
 
 @pytest.mark.django_db
+@override_settings(SEARCH_CANDIDATE_MIN_SIMILARITY=0)
 def test_result_workspace_is_paginated_and_export_is_read_only(source: Source, operator: User) -> None:
     article = create_source_article(source=source, operator=operator)
     now = timezone.now()

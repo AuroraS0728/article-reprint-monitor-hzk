@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import cast
 from urllib.parse import quote
 
+from django.conf import settings
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -162,7 +163,11 @@ class ArticleDiscoveredPublicationView(APIView):
         ).select_related("owned_channel", "platform")
         runs = article.search_runs.order_by("-created_at", "-id")[:100]
         candidates = (
-            SearchRunCandidate.objects.filter(search_run__article=article)
+            SearchRunCandidate.objects.filter(
+                search_run__article=article,
+                published_at__gt=article.published_at,
+                similarity_score__gte=settings.SEARCH_CANDIDATE_MIN_SIMILARITY,
+            )
             .exclude(content_relation=ContentRelation.OWNED)
             .select_related("search_run", "owned_channel")
             .order_by("-search_run__created_at", "-id")[:500]
