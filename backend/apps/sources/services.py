@@ -7,7 +7,7 @@ import json
 import re
 import secrets
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
@@ -796,6 +796,15 @@ def automatic_repost_site_for_candidate(
     return None
 
 
+def normalize_candidate_site_name(
+    candidate: SearchCandidate, *, sites: list[AutomaticRepostSite] | None = None
+) -> SearchCandidate:
+    site = automatic_repost_site_for_candidate(candidate, sites=sites)
+    if site is None or candidate.site_name == site.name:
+        return candidate
+    return replace(candidate, site_name=site.name)
+
+
 def classify_owned_channel(
     candidate: SearchCandidate, *, channels: list[OwnedChannel] | None = None
 ) -> tuple[str, OwnedChannel | None, str]:
@@ -1112,6 +1121,7 @@ def _classify_targeted_crawl_candidate(
     if article.original_url and canonical_url == canonicalize_http_url(article.original_url):
         return None, False
 
+    candidate = normalize_candidate_site_name(candidate)
     record = _persist_search_candidate(run=run, canonical_url=canonical_url, candidate=candidate, phase=phase)
     relation, owned_channel, reason = classify_owned_channel(candidate)
     automatic_site = automatic_repost_site_for_candidate(candidate)
@@ -1459,6 +1469,7 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
         stage_errors: list[SearchProviderError] = []
         stage_counts: dict[str, int] = {"EXACT": 0, "BROAD": 0}
         successful_provider_calls = 0
+        automatic_repost_sites = list(AutomaticRepostSite.objects.filter(is_active=True))
         for configured_code, selected_provider in providers:
             configuration = _configured_provider_row(configured_code)
             provider_had_success = False
@@ -1503,6 +1514,7 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
                         continue
                     if article.original_url and canonical == canonicalize_http_url(article.original_url):
                         continue
+                    candidate = normalize_candidate_site_name(candidate, sites=automatic_repost_sites)
                     if canonical not in all_candidates:
                         all_candidates[canonical] = candidate
                     _persist_search_candidate(run=run, canonical_url=canonical, candidate=candidate, phase=phase)
@@ -1536,7 +1548,6 @@ def search_article(article: Article, *, provider: SearchProvider | None = None) 
         repost_count = 0
         review_count = 0
         owned_channels = list(OwnedChannel.objects.filter(is_active=True))
-        automatic_repost_sites = list(AutomaticRepostSite.objects.filter(is_active=True))
         for canonical, candidate in all_candidates.items():
             candidate_record = SearchRunCandidate.objects.get(
                 search_run=run,
