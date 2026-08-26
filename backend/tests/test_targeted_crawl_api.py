@@ -164,6 +164,23 @@ def test_targeted_crawl_first_scan_overrides_stale_incremental_schedule(
 
 
 @pytest.mark.django_db
+def test_targeted_crawl_does_not_return_completed_article_task(source: Source, article: Article) -> None:
+    article.monitoring_status = ArticleMonitoringStatus.COMPLETED
+    article.monitor_until = timezone.now() - timedelta(minutes=1)
+    article.save(update_fields=["monitoring_status", "monitor_until", "updated_at"])
+    stale_task = TargetedCrawlTask.objects.create(
+        source=source,
+        article=article,
+        query=article.title,
+        next_available_at=timezone.now() - timedelta(minutes=1),
+        first_scan_done=False,
+    )
+
+    assert targeted_crawl_dispatch_state(stale_task) == TargetedCrawlDispatchState.MONITORING_ENDED
+    assert due_targeted_crawl_tasks(source=source, limit=5) == []
+
+
+@pytest.mark.django_db
 def test_targeted_crawl_confirmed_repost_does_not_stop_due_scan(
     source: Source, operator: User, article: Article
 ) -> None:

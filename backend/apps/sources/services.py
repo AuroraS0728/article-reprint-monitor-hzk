@@ -1074,6 +1074,9 @@ def due_targeted_crawl_tasks(*, source: Source, limit: int) -> list[TargetedCraw
         .filter(
             source=source,
             status=TargetedCrawlTaskStatus.PENDING,
+            article__status="ACTIVE",
+            article__monitoring_status=ArticleMonitoringStatus.ACTIVE,
+            article__monitor_until__gt=now,
             next_available_at__lte=now,
         )
         .order_by("next_available_at", "id")[:limit]
