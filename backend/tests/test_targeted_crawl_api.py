@@ -18,6 +18,7 @@ from apps.sources.models import (
     Source,
     TargetedCrawlDispatchState,
     TargetedCrawlTask,
+    TargetedCrawlTaskStatus,
 )
 from apps.sources.services import due_targeted_crawl_tasks, targeted_crawl_dispatch_state
 from apps.sources.token_services import create_source_token
@@ -139,6 +140,46 @@ def test_targeted_crawl_claim_submit_candidates_and_complete(source: Source, ope
     assert replay_response.status_code == 403
     assert TargetedCrawlTask.objects.get(pk=task["id"]).last_run_id == claim["run_id"]
     assert SearchRun.objects.get(pk=claim["run_id"]).candidate_count == 1
+
+
+@pytest.mark.django_db
+def test_targeted_crawl_partial_success_releases_task(source: Source, operator: User, article: Article) -> None:
+    source_token = create_source_token(source=source, name="partial-browser", created_by=operator)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {source_token.plaintext}")
+
+    task = client.get("/api/v1/targeted-crawl/tasks").json()["data"]["tasks"][0]
+    claim = client.post(f"/api/v1/targeted-crawl/tasks/{task['id']}/claim", {}, format="json").json()["data"]
+
+    complete_response = client.post(
+        "/api/v1/targeted-crawl/runs",
+        {
+            "task_id": task["id"],
+            "run_id": claim["run_id"],
+            "claim_token": claim["claim_token"],
+            "status": "PARTIAL_SUCCESS",
+            "matched_count": 0,
+            "submitted_count": 0,
+            "failed_count": 0,
+            "platform_results": [
+                {
+                    "platform_code": "SINA_FINANCE",
+                    "platform_name": "新浪财经",
+                    "status": "SUCCESS",
+                    "crawl_status": "NO_PLATFORM_DUE",
+                    "matched_count": 0,
+                }
+            ],
+        },
+        format="json",
+    )
+
+    assert complete_response.status_code == 200
+    assert complete_response.json()["data"]["run"]["status"] == SearchRunStatus.SUCCESS
+    completed_task = TargetedCrawlTask.objects.get(pk=task["id"])
+    assert completed_task.status == TargetedCrawlTaskStatus.PENDING
+    assert completed_task.claim_token_hash == ""
+    assert completed_task.first_scan_done is True
 
 
 @pytest.mark.django_db

@@ -185,7 +185,7 @@ class TargetedCrawlRunSerializer(serializers.Serializer[object]):
     task_id = serializers.IntegerField(min_value=1)
     run_id = serializers.IntegerField(min_value=1)
     claim_token = serializers.CharField(min_length=32, max_length=256, trim_whitespace=True, write_only=True)
-    status = serializers.ChoiceField(choices=["SUCCESS", "ERROR"])
+    status = serializers.ChoiceField(choices=["SUCCESS", "PARTIAL_SUCCESS", "ERROR"])
     error_code = serializers.RegexField(
         regex=r"^[A-Z0-9_]{1,64}$",
         required=False,
@@ -197,7 +197,9 @@ class TargetedCrawlRunSerializer(serializers.Serializer[object]):
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
         if attrs["status"] == "ERROR" and not attrs.get("error_code"):
             raise serializers.ValidationError({"error_code": "失败运行必须提供错误代码。"})
-        if attrs["status"] == "SUCCESS" and (attrs.get("error_code") or attrs.get("error_message")):
+        if attrs["status"] in {"SUCCESS", "PARTIAL_SUCCESS"} and (
+            attrs.get("error_code") or attrs.get("error_message")
+        ):
             raise serializers.ValidationError("成功运行不能携带失败详情。")
         return attrs
 

@@ -1291,7 +1291,8 @@ def complete_targeted_crawl_run(
     )
     now = timezone.now()
     _refresh_search_run_counts(run)
-    run.status = SearchRunStatus.SUCCESS if run_status == "SUCCESS" else SearchRunStatus.ERROR
+    completed_without_fatal_error = run_status in {"SUCCESS", "PARTIAL_SUCCESS"}
+    run.status = SearchRunStatus.SUCCESS if completed_without_fatal_error else SearchRunStatus.ERROR
     run.error_code = error_code if run_status == "ERROR" else ""
     run.error_message = safe_error_message(error_message) if run_status == "ERROR" else ""
     run.completed_at = now
@@ -1305,7 +1306,7 @@ def complete_targeted_crawl_run(
     task.last_completed_at = now
     task.last_error_code = run.error_code
     task.last_error_message = run.error_message
-    if run_status == "SUCCESS":
+    if completed_without_fatal_error:
         task.first_scan_done = True
         task.first_scan_completed_at = now
         task.next_available_at = _next_search_time(task.article, now)
