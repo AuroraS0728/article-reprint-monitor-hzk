@@ -280,6 +280,16 @@ class TargetedCrawlTaskStatus(models.TextChoices):
     CLOSED = "CLOSED", "已关闭"
 
 
+class TargetedCrawlDispatchState(models.TextChoices):
+    """The reason a browser-search task is (or is not) runnable."""
+
+    FIRST_SCAN_READY = "FIRST_SCAN_READY", "首次扫描就绪"
+    READY = "READY", "计划扫描就绪"
+    WAIT_NEXT_SCAN = "WAIT_NEXT_SCAN", "等待下次扫描"
+    CLAIMED = "CLAIMED", "任务已领取"
+    MONITORING_ENDED = "MONITORING_ENDED", "监测期已结束"
+
+
 class TargetedCrawlTask(models.Model):
     """A source-scoped, leased task for an approved local browser worker.
 
@@ -312,6 +322,10 @@ class TargetedCrawlTask(models.Model):
     claimed_at = models.DateTimeField(null=True, blank=True)
     claim_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
     next_available_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    # A new article receives a browser sweep before incremental scheduling.
+    # This is set only after a successfully completed browser run.
+    first_scan_done = models.BooleanField(default=False, db_index=True)
+    first_scan_completed_at = models.DateTimeField(null=True, blank=True)
     last_completed_at = models.DateTimeField(null=True, blank=True)
     last_run = models.ForeignKey(
         SearchRun,
@@ -334,4 +348,45 @@ class TargetedCrawlTask(models.Model):
                 fields=["source", "status", "next_available_at"],
                 name="sources_tar_source__cbb47e_idx",
             )
+        ]
+
+
+class ReadingMetricStatus(models.TextChoices):
+    SUCCESS = "SUCCESS", "成功"
+    NOT_FOUND = "NOT_FOUND", "未查到"
+    ERROR = "ERROR", "失败"
+
+
+class ReadingMetricObservation(models.Model):
+    """One persisted reading-count observation for an owned-channel publication."""
+
+    repost_record = models.ForeignKey(
+        "reposts.RepostRecord",
+        related_name="reading_metric_observations",
+        on_delete=models.CASCADE,
+    )
+    source = models.ForeignKey(
+        Source,
+        related_name="reading_metric_observations",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+    reading_count = models.PositiveIntegerField(null=True, blank=True)
+    status = models.CharField(
+        max_length=16,
+        choices=ReadingMetricStatus.choices,
+        default=ReadingMetricStatus.SUCCESS,
+        db_index=True,
+    )
+    observed_at = models.DateTimeField(db_index=True)
+    error_message = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "sources_reading_metric_observation"
+        ordering = ["-observed_at", "-id"]
+        indexes = [
+            models.Index(fields=["repost_record", "-observed_at"], name="sources_rea_repost__5c9b11_idx"),
+            models.Index(fields=["source", "-observed_at"], name="sources_rea_source__8e0fd3_idx"),
         ]

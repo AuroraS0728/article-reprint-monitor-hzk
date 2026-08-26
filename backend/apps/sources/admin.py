@@ -5,6 +5,7 @@ from .models import (
     ArticleIngestConflict,
     AutomaticRepostSite,
     OwnedChannel,
+    ReadingMetricObservation,
     SearchProviderConfiguration,
     SearchRun,
     Source,
@@ -87,6 +88,14 @@ class AutomaticRepostSiteAdmin(admin.ModelAdmin):
     list_display = ("code", "name", "is_active", "updated_at")
     list_filter = ("is_active",)
     search_fields = ("code", "name", "notes")
+
+
+@admin.register(ReadingMetricObservation)
+class ReadingMetricObservationAdmin(admin.ModelAdmin):
+    list_display = ("repost_record", "source", "reading_count", "status", "observed_at", "created_at")
+    list_filter = ("status", "source")
+    search_fields = ("repost_record__article__title", "repost_record__canonical_url", "error_message")
+    readonly_fields = ("created_at",)
 
 
 @admin.register(ArticleIngestConflict)

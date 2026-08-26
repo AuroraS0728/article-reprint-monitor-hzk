@@ -17,7 +17,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="OperationLog",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("action_type", models.CharField(max_length=80)),
                 ("target_type", models.CharField(max_length=80)),
                 ("target_id", models.CharField(blank=True, max_length=64)),
@@ -29,14 +37,22 @@ class Migration(migrations.Migration):
                 (
                     "actor",
                     models.ForeignKey(
-                        blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to=settings.AUTH_USER_MODEL
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        to=settings.AUTH_USER_MODEL,
                     ),
                 ),
             ],
             options={
                 "db_table": "audit_operation_log",
                 "ordering": ["-created_at"],
-                "indexes": [models.Index(fields=["created_at", "actor"], name="audit_opera_created_a6ec2e_idx")],
+                "indexes": [
+                    models.Index(
+                        fields=["created_at", "actor"],
+                        name="audit_opera_created_a6ec2e_idx",
+                    )
+                ],
             },
         ),
     ]

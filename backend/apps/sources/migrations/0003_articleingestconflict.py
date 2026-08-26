@@ -14,7 +14,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="ArticleIngestConflict",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("title", models.CharField(max_length=500)),
                 ("normalized_title", models.CharField(db_index=True, max_length=500)),
                 ("author", models.CharField(max_length=255)),
@@ -101,7 +109,8 @@ class Migration(migrations.Migration):
                 "ordering": ["-created_at", "-id"],
                 "constraints": [
                     models.UniqueConstraint(
-                        fields=("source", "source_item_key"), name="uniq_source_ingest_conflict_item"
+                        fields=("source", "source_item_key"),
+                        name="uniq_source_ingest_conflict_item",
                     )
                 ],
             },

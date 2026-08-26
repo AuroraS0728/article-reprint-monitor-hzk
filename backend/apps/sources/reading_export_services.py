@@ -15,6 +15,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from apps.reposts.models import ContentRelation, RepostRecord
 
 from .models import OwnedChannel
+from .reading_metrics import fetch_reading_metrics
 
 EXCEL_DATETIME_FORMAT = "yyyy-mm-dd hh:mm"
 EXCEL_DATE_FORMAT = "yyyy-mm-dd"
@@ -77,9 +78,8 @@ def _sheet_name(value: str, used_names: set[str]) -> str:
 def build_owned_reading_workbook(*, export_as_of: datetime | None = None) -> tuple[bytes, datetime]:
     """Export owned publications separately from external repost monitoring.
 
-    Reading values remain unavailable until a real approved reading provider is
-    integrated.  This export intentionally writes ``—`` rather than inventing
-    zeroes or historical values.
+    Reading values are fetched from the configured owned-channel metric provider
+    when available. Unknown values remain ``—`` rather than being treated as 0.
     """
 
     export_as_of = export_as_of or timezone.now()
@@ -89,6 +89,7 @@ def build_owned_reading_workbook(*, export_as_of: datetime | None = None) -> tup
             is_valid=True,
             content_relation=ContentRelation.OWNED,
             created_at__lte=export_as_of,
+            article__created_at__lte=export_as_of,
         )
         .select_related("article", "owned_channel")
         .order_by("article__published_at", "article__published_date", "id")
@@ -100,6 +101,7 @@ def build_owned_reading_workbook(*, export_as_of: datetime | None = None) -> tup
             continue
         records_by_article_channel[(record.article_id, record.owned_channel_id)].append(record)
         records_by_channel[record.owned_channel_id].append(record)
+    reading_metrics, provider_status = fetch_reading_metrics(records, as_of=export_as_of)
 
     article_ids = sorted({record.article_id for record in records})
     articles = {record.article_id: record.article for record in records}
@@ -117,13 +119,33 @@ def build_owned_reading_workbook(*, export_as_of: datetime | None = None) -> tup
     )
     for article_id in article_ids:
         article = articles[article_id]
+        article_counts = [
+            metric.reading_count
+            for channel in channels
+            for record in records_by_article_channel.get((article_id, channel.id), [])
+            if (metric := reading_metrics.get(record.id)) and metric.reading_count is not None
+        ]
         data_sheet.append(
             [
                 _excel_datetime(article.published_at) or article.published_date,
                 safe_excel_text(article.title),
                 safe_excel_text(article.author or article.author_department),
-                "—",
-                *["—" if records_by_article_channel.get((article_id, channel.id)) else "" for channel in channels],
+                sum(article_counts) if article_counts else "—",
+                *[
+                    (
+                        sum(
+                            metric.reading_count
+                            for record in records_by_article_channel.get((article_id, channel.id), [])
+                            if (metric := reading_metrics.get(record.id)) and metric.reading_count is not None
+                        )
+                        if any(
+                            (metric := reading_metrics.get(record.id)) and metric.reading_count is not None
+                            for record in records_by_article_channel.get((article_id, channel.id), [])
+                        )
+                        else "—" if records_by_article_channel.get((article_id, channel.id)) else ""
+                    )
+                    for channel in channels
+                ],
             ]
         )
     _format_sheet(data_sheet, [19, 52, 18, 14, *([18] * len(channels))])
@@ -134,14 +156,15 @@ def build_owned_reading_workbook(*, export_as_of: datetime | None = None) -> tup
         sheet.append(["发布时间", "标题", "作者", "链接", "阅读量", "状态", "渠道说明"])
         for record in records_by_channel[channel.id]:
             article = record.article
+            metric = reading_metrics.get(record.id)
             sheet.append(
                 [
                     _excel_datetime(article.published_at) or article.published_date,
                     safe_excel_text(article.title),
                     safe_excel_text(article.author or article.author_department),
                     "",
-                    "—",
-                    "阅读量接口待接入",
+                    metric.reading_count if metric and metric.reading_count is not None else "—",
+                    metric.status if metric else "未查到",
                     safe_excel_text(channel.notes),
                 ]
             )
@@ -152,12 +175,17 @@ def build_owned_reading_workbook(*, export_as_of: datetime | None = None) -> tup
     summary.append(["自有渠道", "已识别分发文章数", "链接数", "可用阅读量数", "导出时点"])
     for channel in channels:
         channel_records = records_by_channel[channel.id]
+        available_count = sum(
+            1
+            for record in channel_records
+            if (metric := reading_metrics.get(record.id)) and metric.reading_count is not None
+        )
         summary.append(
             [
                 safe_excel_text(channel.name),
                 len({record.article_id for record in channel_records}),
                 len({(record.article_id, _record_url(record)) for record in channel_records}),
-                0,
+                available_count,
                 _excel_datetime(export_as_of),
             ]
         )
@@ -166,7 +194,11 @@ def build_owned_reading_workbook(*, export_as_of: datetime | None = None) -> tup
             "合计",
             len(article_ids),
             len({(record.article_id, _record_url(record)) for record in records}),
-            0,
+            sum(
+                1
+                for record in records
+                if (metric := reading_metrics.get(record.id)) and metric.reading_count is not None
+            ),
             _excel_datetime(export_as_of),
         ]
     )
@@ -177,7 +209,7 @@ def build_owned_reading_workbook(*, export_as_of: datetime | None = None) -> tup
     for row in [
         ("报表边界", "本文件只包含已确认的自有渠道分发，不包含外部转载；外部转载请下载“转载检测”报表。"),
         ("渠道列", "渠道和工作表由管理员配置及实际已识别的自有分发记录动态生成，不使用固定模拟列。"),
-        ("阅读量", "当前没有已验证的阅读量数据源，因此全部显示“—”，不会将未知数据当作 0。"),
+        ("阅读量", f"当前阅读量状态：{provider_status}。未知值显示“—”，不会将未知数据当作 0。"),
         ("链接", "链接使用真实 Excel 超链接对象；所有外部文本都进行了公式注入防护。"),
         ("导出时点", _excel_datetime(export_as_of)),
     ]:

@@ -49,7 +49,9 @@ def run_detection_batch(self, batch_id: int) -> str:
         return "completed"
     except Exception as error:
         error_message = safe_error_message(error, limit=500)
-        DetectionBatch.objects.filter(pk=batch_id).update(status=BatchStatus.FAILED, failure_message=error_message)
+        DetectionBatch.objects.filter(pk=batch_id).update(
+            status=BatchStatus.FAILED, failure_message=error_message
+        )
         TaskFailureLog.objects.create(
             task_name="run_detection_batch",
             batch_id=batch_id,
@@ -66,7 +68,9 @@ def schedule_automatic_batches() -> int:
     now = timezone.localtime()
     week_start = now.date() - timedelta(days=now.weekday())
     articles = Article.objects.filter(
-        status=ArticleStatus.ACTIVE, published_date__gte=week_start, published_date__lte=now.date()
+        status=ArticleStatus.ACTIVE,
+        published_date__gte=week_start,
+        published_date__lte=now.date(),
     )
     platforms = Platform.objects.filter(status=PlatformStatus.ENABLED)
     if not articles.exists() or not platforms.exists():
@@ -76,7 +80,9 @@ def schedule_automatic_batches() -> int:
         article_ids=articles.values_list("id", flat=True),
         platform_ids=platforms.values_list("id", flat=True),
         created_by=None,
-        idempotency_key=automatic_idempotency_key(week=str(now.isocalendar().week), hour=now.strftime("%Y%m%d%H")),
+        idempotency_key=automatic_idempotency_key(
+            week=str(now.isocalendar().week), hour=now.strftime("%Y%m%d%H")
+        ),
     )
     run_detection_batch.delay(batch.id)
     return batch.id
@@ -88,7 +94,9 @@ def schedule_weekly_final_batch() -> int:
     current_week_start = now.date() - timedelta(days=now.weekday())
     previous_week_start = current_week_start - timedelta(days=7)
     articles = Article.objects.filter(
-        status=ArticleStatus.ACTIVE, published_date__gte=previous_week_start, published_date__lt=current_week_start
+        status=ArticleStatus.ACTIVE,
+        published_date__gte=previous_week_start,
+        published_date__lt=current_week_start,
     )
     platforms = Platform.objects.filter(status=PlatformStatus.ENABLED)
     if not articles.exists() or not platforms.exists():
@@ -108,7 +116,9 @@ def schedule_weekly_final_batch() -> int:
 def create_daily_status_snapshot() -> int:
     now = timezone.localtime()
     cutoff_at = timezone.make_aware(datetime.combine(now.date(), time.min))
-    snapshot = create_status_snapshot(snapshot_type=SnapshotType.DAILY, cutoff_at=cutoff_at)
+    snapshot = create_status_snapshot(
+        snapshot_type=SnapshotType.DAILY, cutoff_at=cutoff_at
+    )
     report_date = now.date() - timedelta(days=1)
     create_report(
         report_type=ReportType.DAILY,
@@ -129,7 +139,9 @@ def create_weekly_status_snapshot(self) -> int:
         DetectionBatch.objects.filter(
             trigger="WEEKLY_FINAL",
             status=BatchStatus.COMPLETED,
-            completed_at__gte=timezone.make_aware(datetime.combine(week_start, time.min)),
+            completed_at__gte=timezone.make_aware(
+                datetime.combine(week_start, time.min)
+            ),
         )
         .order_by("-completed_at")
         .first()
@@ -142,7 +154,9 @@ def create_weekly_status_snapshot(self) -> int:
             message="周一 07:30 尚无已完成的周最终检测批次；未生成空周报快照。",
         )
         raise self.retry(countdown=60, max_retries=30)
-    snapshot = create_status_snapshot(snapshot_type=SnapshotType.WEEKLY, cutoff_at=cutoff_at, source_batch=final_batch)
+    snapshot = create_status_snapshot(
+        snapshot_type=SnapshotType.WEEKLY, cutoff_at=cutoff_at, source_batch=final_batch
+    )
     previous_week_start = week_start - timedelta(days=7)
     report = create_report(
         report_type=ReportType.WEEKLY,

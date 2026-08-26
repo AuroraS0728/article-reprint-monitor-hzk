@@ -5,6 +5,7 @@ from typing import cast
 
 from django.db.models import Exists, OuterRef
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.request import Request
@@ -49,6 +50,7 @@ from .services import (
     link_source_ingest_conflict,
     review_search_candidate,
     submit_targeted_crawl_candidates,
+    targeted_crawl_dispatch_state,
 )
 from .tasks import search_article_reposts
 
@@ -381,6 +383,12 @@ class SearchRunCandidateReviewView(APIView):
 
 def _targeted_crawl_task_payload(task: TargetedCrawlTask) -> dict[str, object]:
     article = task.article
+    now = timezone.now()
+    confirmed_repost_count = RepostRecord.objects.filter(
+        article=article,
+        content_relation=ContentRelation.REPOST,
+        is_valid=True,
+    ).count()
     return {
         "id": task.id,
         "article_id": article.id,
@@ -390,6 +398,10 @@ def _targeted_crawl_task_payload(task: TargetedCrawlTask) -> dict[str, object]:
         "original_url": article.original_url,
         "monitor_until": article.monitor_until,
         "status": task.status,
+        "dispatch_state": targeted_crawl_dispatch_state(task, now=now),
+        "first_scan_done": task.first_scan_done,
+        "first_scan_completed_at": task.first_scan_completed_at,
+        "confirmed_repost_count": confirmed_repost_count,
         "attempt_count": task.attempt_count,
         "next_available_at": task.next_available_at,
         "claim_expires_at": task.claim_expires_at,

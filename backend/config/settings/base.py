@@ -142,6 +142,10 @@ SEARCH_PUBLISHED_TIME_TOLERANCE_HOURS = int(os.environ.get("SEARCH_PUBLISHED_TIM
 SEARCH_ERROR_BACKOFF_MINUTES = int(os.environ.get("SEARCH_ERROR_BACKOFF_MINUTES", "30"))
 SEARCH_LOCK_TIMEOUT_SECONDS = int(os.environ.get("SEARCH_LOCK_TIMEOUT_SECONDS", "300"))
 SEARCH_SCHEDULER_BATCH_SIZE = int(os.environ.get("SEARCH_SCHEDULER_BATCH_SIZE", "100"))
+READING_METRIC_BASE_URL = os.environ.get("READING_METRIC_BASE_URL", "").rstrip("/")
+READING_METRIC_TIMEOUT_SECONDS = float(os.environ.get("READING_METRIC_TIMEOUT_SECONDS", "10"))
+READING_METRIC_COLLECTION_INTERVAL_MINUTES = int(os.environ.get("READING_METRIC_COLLECTION_INTERVAL_MINUTES", "60"))
+READING_METRIC_COLLECTION_BATCH_SIZE = int(os.environ.get("READING_METRIC_COLLECTION_BATCH_SIZE", "100"))
 TARGETED_CRAWL_CLAIM_TTL_SECONDS = int(os.environ.get("TARGETED_CRAWL_CLAIM_TTL_SECONDS", "900"))
 ARTICLE_MONITOR_DAYS = int(os.environ.get("ARTICLE_MONITOR_DAYS", "7"))
 ARTICLE_RETENTION_DAYS = int(os.environ.get("ARTICLE_RETENTION_DAYS", "365"))
@@ -157,6 +161,7 @@ CELERY_TASK_ROUTES = {
     "apps.sources.tasks.schedule_due_article_searches": {"queue": "search"},
     "apps.sources.tasks.complete_expired_article_monitoring": {"queue": "search"},
     "apps.sources.tasks.purge_expired_monitoring_data": {"queue": "report"},
+    "apps.sources.tasks.collect_due_reading_metrics": {"queue": "http"},
     "apps.monitoring.tasks.*": {"queue": "http"},
     "apps.reports.tasks.*": {"queue": "report"},
     "apps.operations.tasks.*": {"queue": "report"},
@@ -173,6 +178,10 @@ CELERY_BEAT_SCHEDULE = {
     "purge-expired-global-monitoring": {
         "task": "apps.sources.tasks.purge_expired_monitoring_data",
         "schedule": crontab(minute=15, hour=2),
+    },
+    "collect-owned-channel-reading-metrics": {
+        "task": "apps.sources.tasks.collect_due_reading_metrics",
+        "schedule": crontab(minute="*/15"),
     },
     "schedule-automatic-detection-hourly": {
         "task": "apps.monitoring.tasks.schedule_automatic_batches",

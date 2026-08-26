@@ -30,14 +30,24 @@ def create_batch(
     if article_ids:
         selected_articles = selected_articles.filter(id__in=set(article_ids))
     if article_date_from:
-        selected_articles = selected_articles.filter(published_date__gte=article_date_from)
+        selected_articles = selected_articles.filter(
+            published_date__gte=article_date_from
+        )
     if article_date_to:
-        selected_articles = selected_articles.filter(published_date__lte=article_date_to)
-    final_article_ids = list(selected_articles.order_by("id").values_list("id", flat=True))
-    selected_platforms = Platform.objects.filter(id__in=set(platform_ids), status=PlatformStatus.ENABLED)
+        selected_articles = selected_articles.filter(
+            published_date__lte=article_date_to
+        )
+    final_article_ids = list(
+        selected_articles.order_by("id").values_list("id", flat=True)
+    )
+    selected_platforms = Platform.objects.filter(
+        id__in=set(platform_ids), status=PlatformStatus.ENABLED
+    )
     if use_all_enabled_platforms:
         selected_platforms = Platform.objects.filter(status=PlatformStatus.ENABLED)
-    final_platform_ids = list(selected_platforms.order_by("id").values_list("id", flat=True))
+    final_platform_ids = list(
+        selected_platforms.order_by("id").values_list("id", flat=True)
+    )
     if not final_article_ids:
         raise ValueError("检测批次必须选择至少一篇有效原创文章。")
     if not final_platform_ids:
@@ -56,7 +66,9 @@ def create_batch(
         )
         for article_id in batch.article_ids:
             for platform_id in batch.platform_ids:
-                DetectionResult.objects.get_or_create(batch=batch, article_id=article_id, platform_id=platform_id)
+                DetectionResult.objects.get_or_create(
+                    batch=batch, article_id=article_id, platform_id=platform_id
+                )
     return batch
 
 
@@ -64,24 +76,36 @@ def automatic_idempotency_key(*, week: str, hour: str) -> str:
     return hashlib.sha256(f"automatic:{week}:{hour}".encode()).hexdigest()
 
 
-def batch_statistics(batch: DetectionBatch, *, cutoff_at: datetime | None = None) -> dict[str, object]:
+def batch_statistics(
+    batch: DetectionBatch, *, cutoff_at: datetime | None = None
+) -> dict[str, object]:
     results = list(batch.results.values("article_id", "platform_id", "status"))
     historical_reposts = RepostRecord.objects.filter(
         article_id__in=batch.article_ids,
         platform_id__in=batch.platform_ids,
         is_valid=True,
-    ).annotate(historical_found_at=Coalesce("first_found_at", "first_discovered_at", "created_at"))
+    ).annotate(
+        historical_found_at=Coalesce(
+            "first_found_at", "first_discovered_at", "created_at"
+        )
+    )
     if cutoff_at is not None:
-        historical_reposts = historical_reposts.filter(historical_found_at__lte=cutoff_at)
+        historical_reposts = historical_reposts.filter(
+            historical_found_at__lte=cutoff_at
+        )
     historical_pairs = set(historical_reposts.values_list("article_id", "platform_id"))
     platform_total = len(batch.platform_ids)
     article_total = len(batch.article_ids)
     per_article: list[dict[str, object]] = []
     for article_id in batch.article_ids:
         article_results = [item for item in results if item["article_id"] == article_id]
-        result_by_platform = {cast(int, item["platform_id"]): cast(str, item["status"]) for item in article_results}
+        result_by_platform = {
+            cast(int, item["platform_id"]): cast(str, item["status"])
+            for item in article_results
+        }
         found = sum(
-            result_by_platform.get(platform_id) == "FOUND" or (article_id, platform_id) in historical_pairs
+            result_by_platform.get(platform_id) == "FOUND"
+            or (article_id, platform_id) in historical_pairs
             for platform_id in batch.platform_ids
         )
         completed = sum(
@@ -95,23 +119,34 @@ def batch_statistics(batch: DetectionBatch, *, cutoff_at: datetime | None = None
                 "reposted_platform_count": found,
                 "platform_repost_rate": found / platform_total if platform_total else 0,
                 "completed_platform_count": completed,
-                "detection_completion_rate": completed / platform_total if platform_total else 0,
+                "detection_completion_rate": (
+                    completed / platform_total if platform_total else 0
+                ),
             }
         )
-    reposted_articles = sum(cast(int, item["reposted_platform_count"]) > 0 for item in per_article)
-    completed_cells = sum(item["status"] in {"FOUND", "NOT_FOUND"} for item in results) + sum(
+    reposted_articles = sum(
+        cast(int, item["reposted_platform_count"]) > 0 for item in per_article
+    )
+    completed_cells = sum(
+        item["status"] in {"FOUND", "NOT_FOUND"} for item in results
+    ) + sum(
         item["status"] == "UNKNOWN"
-        and (cast(int, item["article_id"]), cast(int, item["platform_id"])) in historical_pairs
+        and (cast(int, item["article_id"]), cast(int, item["platform_id"]))
+        in historical_pairs
         for item in results
     )
     return {
         "article_total": article_total,
         "platform_total": platform_total,
         "article_reposted_count": reposted_articles,
-        "article_repost_rate": reposted_articles / article_total if article_total else 0,
+        "article_repost_rate": (
+            reposted_articles / article_total if article_total else 0
+        ),
         "completed_cell_count": completed_cells,
         "detection_completion_rate": (
-            completed_cells / (article_total * platform_total) if article_total and platform_total else 0
+            completed_cells / (article_total * platform_total)
+            if article_total and platform_total
+            else 0
         ),
         "per_article": per_article,
     }

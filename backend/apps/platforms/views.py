@@ -22,7 +22,11 @@ class PlatformListCreateView(generics.ListCreateAPIView[Platform]):
     queryset = Platform.objects.prefetch_related("domains").all()
 
     def get_permissions(self) -> Sequence[BasePermission]:
-        return [IsAdministrator()] if self.request.method == "POST" else [permissions.IsAuthenticated()]
+        return (
+            [IsAdministrator()]
+            if self.request.method == "POST"
+            else [permissions.IsAuthenticated()]
+        )
 
     def perform_create(self, serializer: BaseSerializer[Platform]) -> None:
         platform = cast(Platform, serializer.save())
@@ -66,7 +70,10 @@ class PlatformActionView(APIView):
                 return Response(
                     {
                         "success": False,
-                        "error": {"code": "PLATFORM_NOT_READY", "message": "没有真实验证记录，不能启用平台。"},
+                        "error": {
+                            "code": "PLATFORM_NOT_READY",
+                            "message": "没有真实验证记录，不能启用平台。",
+                        },
                     },
                     status=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 )
@@ -77,7 +84,14 @@ class PlatformActionView(APIView):
             platform.status = PlatformStatus.ARCHIVED
         else:
             return Response(
-                {"success": False, "error": {"code": "VALIDATION_ERROR", "message": "不支持的平台动作。"}}, status=400
+                {
+                    "success": False,
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "不支持的平台动作。",
+                    },
+                },
+                status=400,
             )
         platform.save(update_fields=["status", "updated_at"])
         record_audit(

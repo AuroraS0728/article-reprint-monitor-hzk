@@ -12,7 +12,9 @@ class Migration(migrations.Migration):
             model_name="articleimportjob",
             name="uploaded_file",
             field=models.FileField(
-                blank=True, max_length=300, upload_to=apps.articles.models.private_import_upload_path
+                blank=True,
+                max_length=300,
+                upload_to=apps.articles.models.private_import_upload_path,
             ),
         ),
     ]

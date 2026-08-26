@@ -10,6 +10,10 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name="generatedreport",
             name="report_file",
-            field=models.FileField(blank=True, max_length=300, upload_to=apps.reports.models.report_upload_path),
+            field=models.FileField(
+                blank=True,
+                max_length=300,
+                upload_to=apps.reports.models.report_upload_path,
+            ),
         )
     ]

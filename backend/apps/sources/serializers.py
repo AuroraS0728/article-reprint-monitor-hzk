@@ -7,6 +7,7 @@ from search_providers.exceptions import SearchProviderError
 from .models import (
     ArticleIngestConflict,
     ArticleIngestConflictStatus,
+    ReadingMetricStatus,
     SearchProviderConfiguration,
     SearchRunCandidate,
 )
@@ -199,6 +200,35 @@ class TargetedCrawlRunSerializer(serializers.Serializer[object]):
         if attrs["status"] == "SUCCESS" and (attrs.get("error_code") or attrs.get("error_message")):
             raise serializers.ValidationError("成功运行不能携带失败详情。")
         return attrs
+
+
+class ReadingMetricObservationItemSerializer(serializers.Serializer[object]):
+    publication_id = serializers.IntegerField(min_value=1)
+    reading_count = serializers.IntegerField(min_value=0, required=False, allow_null=True)
+    observed_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
+    status = serializers.ChoiceField(
+        choices=ReadingMetricStatus.values,
+        required=False,
+        default=ReadingMetricStatus.SUCCESS,
+    )
+    error_message = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        if (
+            attrs.get("status", ReadingMetricStatus.SUCCESS) == ReadingMetricStatus.SUCCESS
+            and attrs.get("reading_count") is None
+        ):
+            raise serializers.ValidationError({"reading_count": "成功获取阅读量时必须提供 reading_count。"})
+        return attrs
+
+
+class ReadingMetricObservationSubmitSerializer(serializers.Serializer[object]):
+    observations = ReadingMetricObservationItemSerializer(many=True)
+
+    def validate_observations(self, value: object) -> object:
+        if not isinstance(value, list) or not 1 <= len(value) <= 100:
+            raise serializers.ValidationError("每次最多提交 100 条阅读量观测，且至少需要 1 条。")
+        return value
 
 
 class ArticleIngestConflictSerializer(serializers.ModelSerializer[ArticleIngestConflict]):

@@ -17,7 +17,9 @@ class SMTPConfigurationError(ValueError):
 def _fernet() -> Fernet:
     key = getattr(settings, "FIELD_ENCRYPTION_KEY", "")
     if not key:
-        raise SMTPConfigurationError("未配置 FIELD_ENCRYPTION_KEY，无法保存或使用 SMTP 授权码。")
+        raise SMTPConfigurationError(
+            "未配置 FIELD_ENCRYPTION_KEY，无法保存或使用 SMTP 授权码。"
+        )
     try:
         return Fernet(key.encode())
     except (TypeError, ValueError) as error:
@@ -32,7 +34,9 @@ def decrypt_authorization_code(value: str) -> str:
     try:
         return _fernet().decrypt(value.encode()).decode()
     except InvalidToken as error:
-        raise SMTPConfigurationError("SMTP 授权码无法解密，请由管理员重新配置。") from error
+        raise SMTPConfigurationError(
+            "SMTP 授权码无法解密，请由管理员重新配置。"
+        ) from error
 
 
 def smtp_configuration() -> SMTPConfiguration:
@@ -42,7 +46,12 @@ def smtp_configuration() -> SMTPConfiguration:
 def validate_configuration(config: SMTPConfiguration) -> None:
     if not config.enabled:
         raise SMTPConfigurationError("SMTP 未启用。")
-    if not (config.host and config.from_email and config.encrypted_authorization_code and config.recipients):
+    if not (
+        config.host
+        and config.from_email
+        and config.encrypted_authorization_code
+        and config.recipients
+    ):
         raise SMTPConfigurationError("SMTP 配置不完整。")
 
 
@@ -87,4 +96,6 @@ def send_delivery(delivery: ReportEmailDelivery) -> None:
         raise
     finally:
         delivery.attempt_count += 1
-        delivery.save(update_fields=["status", "error_message", "sent_at", "attempt_count"])
+        delivery.save(
+            update_fields=["status", "error_message", "sent_at", "attempt_count"]
+        )

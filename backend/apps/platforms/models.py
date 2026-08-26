@@ -23,8 +23,12 @@ class AdapterType(models.TextChoices):
 class Platform(models.Model):
     code = models.CharField(max_length=50, unique=True)
     name = models.CharField(max_length=100, unique=True)
-    status = models.CharField(max_length=16, choices=PlatformStatus.choices, default=PlatformStatus.PENDING)
-    adapter_type = models.CharField(max_length=30, choices=AdapterType.choices, default=AdapterType.HTML_SEARCH)
+    status = models.CharField(
+        max_length=16, choices=PlatformStatus.choices, default=PlatformStatus.PENDING
+    )
+    adapter_type = models.CharField(
+        max_length=30, choices=AdapterType.choices, default=AdapterType.HTML_SEARCH
+    )
     default_max_pages = models.PositiveSmallIntegerField(default=5)
     default_max_results = models.PositiveSmallIntegerField(default=100)
     request_interval_ms = models.PositiveIntegerField(default=2000)
@@ -47,7 +51,9 @@ class Platform(models.Model):
 
 
 class PlatformDomain(models.Model):
-    platform = models.ForeignKey(Platform, related_name="domains", on_delete=models.CASCADE)
+    platform = models.ForeignKey(
+        Platform, related_name="domains", on_delete=models.CASCADE
+    )
     domain = models.CharField(max_length=253, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

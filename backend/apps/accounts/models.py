@@ -12,7 +12,11 @@ class Role(models.TextChoices):
 
 class RepostUserManager(UserManager["User"]):
     def create_superuser(
-        self, username: str, email: str | None = None, password: str | None = None, **extra_fields: object
+        self,
+        username: str,
+        email: str | None = None,
+        password: str | None = None,
+        **extra_fields: object
     ) -> "User":
         extra_fields.setdefault("role", Role.ADMIN)
         extra_fields.setdefault("must_change_password", False)

@@ -14,11 +14,23 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="DetectionBatch",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 (
                     "trigger",
                     models.CharField(
-                        choices=[("IMMEDIATE", "立即检测"), ("AUTOMATIC", "自动检测"), ("WEEKLY_FINAL", "周最终检测")],
+                        choices=[
+                            ("IMMEDIATE", "立即检测"),
+                            ("AUTOMATIC", "自动检测"),
+                            ("WEEKLY_FINAL", "周最终检测"),
+                        ],
                         max_length=16,
                     ),
                 ),
@@ -41,7 +53,10 @@ class Migration(migrations.Migration):
                 ("article_date_from", models.DateField(blank=True, null=True)),
                 ("article_date_to", models.DateField(blank=True, null=True)),
                 ("idempotency_key", models.CharField(max_length=128, unique=True)),
-                ("scheduled_for", models.DateTimeField(blank=True, db_index=True, null=True)),
+                (
+                    "scheduled_for",
+                    models.DateTimeField(blank=True, db_index=True, null=True),
+                ),
                 ("started_at", models.DateTimeField(blank=True, null=True)),
                 ("completed_at", models.DateTimeField(blank=True, null=True)),
                 ("failure_message", models.CharField(blank=True, max_length=500)),
@@ -49,20 +64,36 @@ class Migration(migrations.Migration):
                 (
                     "created_by",
                     models.ForeignKey(
-                        blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, to=settings.AUTH_USER_MODEL
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to=settings.AUTH_USER_MODEL,
                     ),
                 ),
             ],
-            options={"db_table": "monitoring_detection_batch", "ordering": ["-created_at", "-id"]},
+            options={
+                "db_table": "monitoring_detection_batch",
+                "ordering": ["-created_at", "-id"],
+            },
         ),
         migrations.CreateModel(
             name="DetectionResult",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 (
                     "status",
                     models.CharField(
-                        choices=[("FOUND", "1"), ("NOT_FOUND", "0"), ("UNKNOWN", "—")], default="UNKNOWN", max_length=16
+                        choices=[("FOUND", "1"), ("NOT_FOUND", "0"), ("UNKNOWN", "—")],
+                        default="UNKNOWN",
+                        max_length=16,
                     ),
                 ),
                 ("reason_code", models.CharField(blank=True, max_length=64)),
@@ -72,7 +103,13 @@ class Migration(migrations.Migration):
                 ("completed_at", models.DateTimeField(blank=True, null=True)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("updated_at", models.DateTimeField(auto_now=True)),
-                ("article", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to="articles.article")),
+                (
+                    "article",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to="articles.article",
+                    ),
+                ),
                 (
                     "batch",
                     models.ForeignKey(
@@ -81,17 +118,34 @@ class Migration(migrations.Migration):
                         to="monitoring.detectionbatch",
                     ),
                 ),
-                ("platform", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to="platforms.platform")),
+                (
+                    "platform",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to="platforms.platform",
+                    ),
+                ),
             ],
             options={"db_table": "monitoring_detection_result"},
         ),
         migrations.CreateModel(
             name="StatusSnapshot",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 (
                     "snapshot_type",
-                    models.CharField(choices=[("DAILY", "日报状态"), ("WEEKLY", "周报状态")], max_length=16),
+                    models.CharField(
+                        choices=[("DAILY", "日报状态"), ("WEEKLY", "周报状态")],
+                        max_length=16,
+                    ),
                 ),
                 ("cutoff_at", models.DateTimeField(db_index=True)),
                 ("matrix_data", models.JSONField(default=dict)),
@@ -112,7 +166,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="TaskFailureLog",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("task_name", models.CharField(max_length=200)),
                 ("error_type", models.CharField(max_length=100)),
                 ("message", models.CharField(max_length=1000)),
@@ -127,24 +189,34 @@ class Migration(migrations.Migration):
                     ),
                 ),
             ],
-            options={"db_table": "monitoring_task_failure_log", "ordering": ["-created_at"]},
+            options={
+                "db_table": "monitoring_task_failure_log",
+                "ordering": ["-created_at"],
+            },
         ),
         migrations.AddConstraint(
             model_name="detectionresult",
             constraint=models.UniqueConstraint(
-                fields=("batch", "article", "platform"), name="uniq_batch_article_platform"
+                fields=("batch", "article", "platform"),
+                name="uniq_batch_article_platform",
             ),
         ),
         migrations.AddIndex(
             model_name="detectionresult",
-            index=models.Index(fields=["batch", "status"], name="monitoring_d_batch_i_7a79c3_idx"),
+            index=models.Index(
+                fields=["batch", "status"], name="monitoring_d_batch_i_7a79c3_idx"
+            ),
         ),
         migrations.AddIndex(
             model_name="detectionresult",
-            index=models.Index(fields=["article", "platform"], name="monitoring_d_article_01db2c_idx"),
+            index=models.Index(
+                fields=["article", "platform"], name="monitoring_d_article_01db2c_idx"
+            ),
         ),
         migrations.AddConstraint(
             model_name="statussnapshot",
-            constraint=models.UniqueConstraint(fields=("snapshot_type", "cutoff_at"), name="uniq_snapshot_type_cutoff"),
+            constraint=models.UniqueConstraint(
+                fields=("snapshot_type", "cutoff_at"), name="uniq_snapshot_type_cutoff"
+            ),
         ),
     ]

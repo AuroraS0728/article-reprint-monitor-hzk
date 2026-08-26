@@ -48,13 +48,23 @@ class LoginView(APIView):
         password = serializer.validated_data["password"]
         user = authenticate(request, username=username, password=password)
         if user is None or not user.is_active:
-            record_audit(request, action_type="LOGIN_FAILED", target_type="user", target_id=username)
+            record_audit(
+                request,
+                action_type="LOGIN_FAILED",
+                target_type="user",
+                target_id=username,
+            )
             return Response(
-                {"success": False, "error": {"code": "AUTH_INVALID", "message": "用户名或密码错误"}},
+                {
+                    "success": False,
+                    "error": {"code": "AUTH_INVALID", "message": "用户名或密码错误"},
+                },
                 status=status.HTTP_401_UNAUTHORIZED,
             )
         login(request, user)
-        record_audit(request, action_type="LOGIN_SUCCESS", target_type="user", target_id=user.id)
+        record_audit(
+            request, action_type="LOGIN_SUCCESS", target_type="user", target_id=user.id
+        )
         return ok({"id": user.id, "username": user.username, "role": user.role})
 
 
@@ -63,7 +73,12 @@ class LogoutView(APIView):
 
     def post(self, request: Request) -> Response:
         if request.user.is_authenticated:
-            record_audit(request, action_type="LOGOUT", target_type="user", target_id=request.user.id)
+            record_audit(
+                request,
+                action_type="LOGOUT",
+                target_type="user",
+                target_id=request.user.id,
+            )
         logout(request)
         return ok({})
 
@@ -92,14 +107,23 @@ class ChangePasswordView(APIView):
         user = cast(User, request.user)
         if not user.check_password(serializer.validated_data["old_password"]):
             return Response(
-                {"success": False, "error": {"code": "AUTH_INVALID", "message": "当前密码不正确。"}}, status=400
+                {
+                    "success": False,
+                    "error": {"code": "AUTH_INVALID", "message": "当前密码不正确。"},
+                },
+                status=400,
             )
         validate_password(serializer.validated_data["new_password"], user=user)
         user.set_password(serializer.validated_data["new_password"])
         user.must_change_password = False
         user.save(update_fields=["password", "must_change_password"])
         update_session_auth_hash(request, user)
-        record_audit(request, action_type="PASSWORD_CHANGE", target_type="user", target_id=user.id)
+        record_audit(
+            request,
+            action_type="PASSWORD_CHANGE",
+            target_type="user",
+            target_id=user.id,
+        )
         return ok({})
 
 
@@ -108,7 +132,11 @@ class UserListCreateView(APIView):
     serializer_class = UserManagementSerializer
 
     def get(self, request: Request) -> Response:
-        return ok(UserManagementSerializer(User.objects.all().order_by("username"), many=True).data)
+        return ok(
+            UserManagementSerializer(
+                User.objects.all().order_by("username"), many=True
+            ).data
+        )
 
     def post(self, request: Request) -> Response:
         serializer = UserManagementSerializer(data=request.data)

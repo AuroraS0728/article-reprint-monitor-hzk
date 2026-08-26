@@ -33,10 +33,16 @@ class ReportSerializer(serializers.ModelSerializer[GeneratedReport]):
 
 
 class SMTPConfigurationSerializer(serializers.ModelSerializer[SMTPConfiguration]):
-    authorization_code = serializers.CharField(write_only=True, required=False, allow_blank=False)
-    authorization_code_configured = serializers.BooleanField(source="encrypted_authorization_code", read_only=True)
+    authorization_code = serializers.CharField(
+        write_only=True, required=False, allow_blank=False
+    )
+    authorization_code_configured = serializers.BooleanField(
+        source="encrypted_authorization_code", read_only=True
+    )
     recipients = serializers.ListField(child=serializers.EmailField(), required=False)
-    cc_recipients = serializers.ListField(child=serializers.EmailField(), required=False)
+    cc_recipients = serializers.ListField(
+        child=serializers.EmailField(), required=False
+    )
 
     class Meta:
         model = SMTPConfiguration
@@ -55,12 +61,16 @@ class SMTPConfigurationSerializer(serializers.ModelSerializer[SMTPConfiguration]
         ]
         read_only_fields = ["authorization_code_configured", "updated_at"]
 
-    def update(self, instance: SMTPConfiguration, validated_data: dict[str, object]) -> SMTPConfiguration:
+    def update(
+        self, instance: SMTPConfiguration, validated_data: dict[str, object]
+    ) -> SMTPConfiguration:
         authorization_code = validated_data.pop("authorization_code", None)
         for key, value in validated_data.items():
             setattr(instance, key, value)
         if isinstance(authorization_code, str):
-            instance.encrypted_authorization_code = encrypt_authorization_code(authorization_code)
+            instance.encrypted_authorization_code = encrypt_authorization_code(
+                authorization_code
+            )
         instance.save()
         return instance
 

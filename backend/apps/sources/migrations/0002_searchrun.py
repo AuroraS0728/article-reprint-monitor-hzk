@@ -3,12 +3,23 @@ import django.db.models.deletion
 
 
 class Migration(migrations.Migration):
-    dependencies = [("articles", "0003_source_global_monitoring"), ("sources", "0001_initial")]
+    dependencies = [
+        ("articles", "0003_source_global_monitoring"),
+        ("sources", "0001_initial"),
+    ]
     operations = [
         migrations.CreateModel(
             name="SearchRun",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("provider", models.CharField(max_length=50)),
                 ("query", models.TextField()),
                 ("started_at", models.DateTimeField(blank=True, null=True)),
@@ -16,7 +27,12 @@ class Migration(migrations.Migration):
                 (
                     "status",
                     models.CharField(
-                        choices=[("PENDING", "待执行"), ("RUNNING", "执行中"), ("SUCCESS", "成功"), ("ERROR", "失败")],
+                        choices=[
+                            ("PENDING", "待执行"),
+                            ("RUNNING", "执行中"),
+                            ("SUCCESS", "成功"),
+                            ("ERROR", "失败"),
+                        ],
                         default="PENDING",
                         max_length=16,
                     ),
@@ -40,7 +56,10 @@ class Migration(migrations.Migration):
                 "db_table": "sources_search_run",
                 "ordering": ["-created_at", "-id"],
                 "indexes": [
-                    models.Index(fields=["article", "status", "created_at"], name="sources_sea_article_8b0a7e_idx")
+                    models.Index(
+                        fields=["article", "status", "created_at"],
+                        name="sources_sea_article_8b0a7e_idx",
+                    )
                 ],
             },
         )

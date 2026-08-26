@@ -23,5 +23,8 @@ class CanOperate(BasePermission):
         return bool(
             getattr(request, "user", None)
             and request.user.is_authenticated
-            and (request.user.is_superuser or request.user.role in {Role.ADMIN, Role.OPERATOR})
+            and (
+                request.user.is_superuser
+                or request.user.role in {Role.ADMIN, Role.OPERATOR}
+            )
         )

@@ -6,7 +6,9 @@ from .models import OperationLog
 
 
 class OperationLogSerializer(serializers.ModelSerializer[OperationLog]):
-    actor_username = serializers.CharField(source="actor.username", read_only=True, default=None)
+    actor_username = serializers.CharField(
+        source="actor.username", read_only=True, default=None
+    )
 
     class Meta:
         model = OperationLog

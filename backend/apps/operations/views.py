@@ -19,7 +19,11 @@ from apps.platforms.models import Platform
 from apps.platforms.serializers import PlatformSerializer
 
 from .models import DatabaseBackup, MaintenanceRun
-from .serializers import DatabaseBackupSerializer, MaintenanceRunSerializer, SystemRuntimeConfigurationSerializer
+from .serializers import (
+    DatabaseBackupSerializer,
+    MaintenanceRunSerializer,
+    SystemRuntimeConfigurationSerializer,
+)
 from .services import runtime_configuration
 from .tasks import cleanup_expired_data_task, create_database_backup_task
 
@@ -34,7 +38,9 @@ class SystemRuntimeConfigurationView(APIView):
     def patch(self, request: Request) -> Response:
         configuration = runtime_configuration()
         before = SystemRuntimeConfigurationSerializer(configuration).data
-        serializer = SystemRuntimeConfigurationSerializer(configuration, data=request.data, partial=True)
+        serializer = SystemRuntimeConfigurationSerializer(
+            configuration, data=request.data, partial=True
+        )
         serializer.is_valid(raise_exception=True)
         changed = serializer.save(updated_by=cast(User, request.user))
         record_audit(
@@ -75,7 +81,11 @@ class FailedDetectionBatchListView(APIView):
     serializer_class = DetectionBatchSerializer
 
     def get(self, request: Request) -> Response:
-        return ok(DetectionBatchSerializer(DetectionBatch.objects.filter(status="FAILED")[:100], many=True).data)
+        return ok(
+            DetectionBatchSerializer(
+                DetectionBatch.objects.filter(status="FAILED")[:100], many=True
+            ).data
+        )
 
 
 class TaskFailureLogListView(APIView):
@@ -103,7 +113,9 @@ class MaintenanceRunListView(APIView):
     serializer_class = MaintenanceRunSerializer
 
     def get(self, request: Request) -> Response:
-        return ok(MaintenanceRunSerializer(MaintenanceRun.objects.all()[:100], many=True).data)
+        return ok(
+            MaintenanceRunSerializer(MaintenanceRun.objects.all()[:100], many=True).data
+        )
 
 
 class DatabaseBackupListView(APIView):
@@ -111,7 +123,9 @@ class DatabaseBackupListView(APIView):
     serializer_class = DatabaseBackupSerializer
 
     def get(self, request: Request) -> Response:
-        return ok(DatabaseBackupSerializer(DatabaseBackup.objects.all()[:100], many=True).data)
+        return ok(
+            DatabaseBackupSerializer(DatabaseBackup.objects.all()[:100], many=True).data
+        )
 
 
 class MaintenanceActionView(APIView):
@@ -127,7 +141,13 @@ class MaintenanceActionView(APIView):
             action_type = "SYSTEM_DATABASE_BACKUP_REQUEST"
         else:
             return Response(
-                {"success": False, "error": {"code": "VALIDATION_ERROR", "message": "不支持的维护操作。"}},
+                {
+                    "success": False,
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "不支持的维护操作。",
+                    },
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         record_audit(request, action_type=action_type, target_type="SystemMaintenance")

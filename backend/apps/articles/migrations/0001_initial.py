@@ -17,13 +17,23 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="ArticleImportJob",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("original_filename", models.CharField(max_length=255)),
                 ("sha256", models.CharField(max_length=64)),
                 (
                     "status",
                     models.CharField(
-                        choices=[("PREVIEW", "待确认"), ("COMPLETED", "已完成")], default="PREVIEW", max_length=16
+                        choices=[("PREVIEW", "待确认"), ("COMPLETED", "已完成")],
+                        default="PREVIEW",
+                        max_length=16,
                     ),
                 ),
                 ("total_rows", models.PositiveIntegerField(default=0)),
@@ -36,7 +46,10 @@ class Migration(migrations.Migration):
                 ("completed_at", models.DateTimeField(blank=True, null=True)),
                 (
                     "created_by",
-                    models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to=settings.AUTH_USER_MODEL),
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to=settings.AUTH_USER_MODEL,
+                    ),
                 ),
             ],
             options={
@@ -47,7 +60,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="Article",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("title", models.CharField(max_length=500)),
                 ("normalized_title", models.CharField(db_index=True, max_length=500)),
                 ("published_date", models.DateField(db_index=True)),
@@ -58,7 +79,11 @@ class Migration(migrations.Migration):
                 (
                     "status",
                     models.CharField(
-                        choices=[("ACTIVE", "监测中"), ("STOPPED", "停止监测"), ("ARCHIVED", "已归档")],
+                        choices=[
+                            ("ACTIVE", "监测中"),
+                            ("STOPPED", "停止监测"),
+                            ("ARCHIVED", "已归档"),
+                        ],
                         db_index=True,
                         default="ACTIVE",
                         max_length=16,
@@ -68,7 +93,10 @@ class Migration(migrations.Migration):
                 ("updated_at", models.DateTimeField(auto_now=True)),
                 (
                     "created_by",
-                    models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to=settings.AUTH_USER_MODEL),
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to=settings.AUTH_USER_MODEL,
+                    ),
                 ),
             ],
             options={
@@ -76,7 +104,8 @@ class Migration(migrations.Migration):
                 "ordering": ["-published_date", "-id"],
                 "constraints": [
                     models.UniqueConstraint(
-                        fields=("normalized_title", "published_date"), name="uniq_article_title_date"
+                        fields=("normalized_title", "published_date"),
+                        name="uniq_article_title_date",
                     )
                 ],
             },

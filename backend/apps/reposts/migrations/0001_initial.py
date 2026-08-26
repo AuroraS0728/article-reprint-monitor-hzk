@@ -4,12 +4,23 @@ import django.db.models.deletion
 
 class Migration(migrations.Migration):
     initial = True
-    dependencies = [("articles", "0002_articleimportjob_uploaded_file"), ("platforms", "0001_initial")]
+    dependencies = [
+        ("articles", "0002_articleimportjob_uploaded_file"),
+        ("platforms", "0001_initial"),
+    ]
     operations = [
         migrations.CreateModel(
             name="RepostRecord",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("original_url", models.URLField(max_length=2048)),
                 ("normalized_url", models.URLField(max_length=2048)),
                 ("normalized_url_hash", models.CharField(max_length=64)),
@@ -46,7 +57,8 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="repostrecord",
             constraint=models.UniqueConstraint(
-                fields=("article", "platform", "normalized_url_hash"), name="uniq_repost_url"
+                fields=("article", "platform", "normalized_url_hash"),
+                name="uniq_repost_url",
             ),
         ),
     ]

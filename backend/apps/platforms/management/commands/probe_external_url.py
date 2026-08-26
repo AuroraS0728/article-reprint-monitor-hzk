@@ -40,7 +40,11 @@ class _TitleParser(HTMLParser):
                 "author",
             } and attributes.get("content"):
                 self.metadata[key] = attributes["content"]
-        if tag.lower() == "link" and attributes.get("rel", "").lower() == "canonical" and attributes.get("href"):
+        if (
+            tag.lower() == "link"
+            and attributes.get("rel", "").lower() == "canonical"
+            and attributes.get("href")
+        ):
             self.metadata["canonical"] = attributes["href"]
         if tag.lower() == "time" and attributes.get("datetime"):
             self.time_values.append(attributes["datetime"])
@@ -64,10 +68,18 @@ class Command(BaseCommand):
     def add_arguments(self, parser: CommandParser) -> None:
         parser.add_argument("--url", required=True, help="Explicit URL to validate.")
         parser.add_argument(
-            "--allowed-domain", action="append", required=True, help="Approved platform domain; may repeat."
+            "--allowed-domain",
+            action="append",
+            required=True,
+            help="Approved platform domain; may repeat.",
         )
-        parser.add_argument("--expected-title", help="Optional expected title for a manual validation comparison.")
-        parser.add_argument("--timeout", type=float, default=15, help="Request timeout in seconds.")
+        parser.add_argument(
+            "--expected-title",
+            help="Optional expected title for a manual validation comparison.",
+        )
+        parser.add_argument(
+            "--timeout", type=float, default=15, help="Request timeout in seconds."
+        )
 
     def handle(self, *args: object, **options: object) -> None:
         url = str(options["url"])
@@ -96,7 +108,9 @@ class Command(BaseCommand):
             "document_metadata": parser.metadata,
             "time_elements": parser.time_values,
             "title_exact_match": (
-                normalize_title(parser.title) == normalize_title(expected_title) if expected_title else None
+                normalize_title(parser.title) == normalize_title(expected_title)
+                if expected_title
+                else None
             ),
             "classification": "UNSPECIFIED_TEST_DATA",
         }

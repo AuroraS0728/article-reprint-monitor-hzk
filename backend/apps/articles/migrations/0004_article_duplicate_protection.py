@@ -7,7 +7,9 @@ def backfill_duplicate_slots(apps, schema_editor):
     Article = apps.get_model("articles", "Article")
     current_group = None
     slot = 0
-    for article in Article.objects.order_by("normalized_title", "published_date", "id").iterator():
+    for article in Article.objects.order_by(
+        "normalized_title", "published_date", "id"
+    ).iterator():
         group = (article.normalized_title, article.published_date)
         if group != current_group:
             current_group = group
@@ -18,7 +20,9 @@ def backfill_duplicate_slots(apps, schema_editor):
             article.duplicate_approved_by = None
             article.duplicate_approved_at = None
             article.duplicate_reason = "LEGACY_MIGRATION_EXISTING_DUPLICATE"
-            update_fields.extend(["duplicate_approved_by", "duplicate_approved_at", "duplicate_reason"])
+            update_fields.extend(
+                ["duplicate_approved_by", "duplicate_approved_at", "duplicate_reason"]
+            )
         article.save(update_fields=update_fields)
         slot += 1
 

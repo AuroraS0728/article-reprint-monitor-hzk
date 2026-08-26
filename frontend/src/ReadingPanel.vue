@@ -39,7 +39,7 @@ async function exportExcel(): Promise<void> {
 
 <template>
   <section class="reading-panel">
-    <div class="panel-heading"><div><h1>阅读量检测</h1><p>只展示已识别的自有分发内容；真实阅读量接口尚未接入。</p></div><div><el-tag type="info">{{ providerStatus }}</el-tag><el-button :loading="exporting" @click="exportExcel">导出阅读量 Excel</el-button></div></div>
+    <div class="panel-heading"><div><h1>阅读量检测</h1><p>只展示已识别的自有分发内容；后台按配置周期自动更新阅读量，无需领取任务。</p></div><div><el-tag type="info">{{ providerStatus }}</el-tag><el-button :loading="exporting" @click="exportExcel">导出阅读量 Excel</el-button></div></div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <el-skeleton v-else-if="loading" :rows="6" animated />
     <template v-else>

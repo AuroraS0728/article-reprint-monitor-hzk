@@ -11,7 +11,15 @@ from apps.accounts.models import Role, User
 from apps.articles.models import Article, ArticleMonitoringStatus, ArticleStatus
 from apps.articles.services import normalize_title
 from apps.reposts.models import ContentRelation, RepostRecord
-from apps.sources.models import AutomaticRepostSite, SearchRun, SearchRunStatus, Source, TargetedCrawlTask
+from apps.sources.models import (
+    AutomaticRepostSite,
+    SearchRun,
+    SearchRunStatus,
+    Source,
+    TargetedCrawlDispatchState,
+    TargetedCrawlTask,
+)
+from apps.sources.services import due_targeted_crawl_tasks, targeted_crawl_dispatch_state
 from apps.sources.token_services import create_source_token
 
 
@@ -67,6 +75,8 @@ def test_targeted_crawl_claim_submit_candidates_and_complete(source: Source, ope
     task = task_response.json()["data"]["tasks"][0]
     assert task["article_id"] == article.id
     assert task["query"] == article.title
+    assert task["dispatch_state"] == TargetedCrawlDispatchState.FIRST_SCAN_READY
+    assert task["first_scan_done"] is False
 
     claim_response = client.post(f"/api/v1/targeted-crawl/tasks/{task['id']}/claim", {}, format="json")
     assert claim_response.status_code == 201
@@ -110,6 +120,10 @@ def test_targeted_crawl_claim_submit_candidates_and_complete(source: Source, ope
     assert complete_response.status_code == 200
     assert complete_response.json()["data"]["run"]["status"] == SearchRunStatus.SUCCESS
     assert complete_response.json()["data"]["run"]["repost_count"] == 1
+    completed_task = TargetedCrawlTask.objects.get(pk=task["id"])
+    assert completed_task.first_scan_done is True
+    assert completed_task.first_scan_completed_at is not None
+    assert targeted_crawl_dispatch_state(completed_task) == TargetedCrawlDispatchState.WAIT_NEXT_SCAN
     assert RepostRecord.objects.filter(article=article, content_relation=ContentRelation.REPOST).exists()
 
     replay_response = client.post(
@@ -125,6 +139,59 @@ def test_targeted_crawl_claim_submit_candidates_and_complete(source: Source, ope
     assert replay_response.status_code == 403
     assert TargetedCrawlTask.objects.get(pk=task["id"]).last_run_id == claim["run_id"]
     assert SearchRun.objects.get(pk=claim["run_id"]).candidate_count == 1
+
+
+@pytest.mark.django_db
+def test_targeted_crawl_first_scan_overrides_stale_incremental_schedule(
+    source: Source, operator: User, article: Article
+) -> None:
+    """A just-ingested article must not wait for an old schedule timestamp."""
+
+    delayed_task = TargetedCrawlTask.objects.create(
+        source=source,
+        article=article,
+        query=article.title,
+        next_available_at=timezone.now() + timedelta(hours=2),
+        first_scan_done=False,
+    )
+
+    due_tasks = due_targeted_crawl_tasks(source=source, limit=5)
+
+    delayed_task.refresh_from_db()
+    assert [task.id for task in due_tasks] == [delayed_task.id]
+    assert delayed_task.next_available_at <= timezone.now()
+    assert targeted_crawl_dispatch_state(delayed_task) == TargetedCrawlDispatchState.FIRST_SCAN_READY
+
+
+@pytest.mark.django_db
+def test_targeted_crawl_confirmed_repost_does_not_stop_due_scan(
+    source: Source, operator: User, article: Article
+) -> None:
+    """Confirmed reposts do not become a task-level skip condition."""
+
+    task = TargetedCrawlTask.objects.create(
+        source=source,
+        article=article,
+        query=article.title,
+        first_scan_done=True,
+        next_available_at=timezone.now() - timedelta(minutes=1),
+    )
+    RepostRecord.objects.create(
+        article=article,
+        site_name="Existing external site",
+        site_domain="existing.example.net",
+        original_url="https://existing.example.net/repost",
+        normalized_url="https://existing.example.net/repost",
+        normalized_url_hash="e" * 64,
+        repost_title=article.title,
+        first_discovered_at=timezone.now(),
+        last_checked_at=timezone.now(),
+        data_source="TEST",
+        content_relation=ContentRelation.REPOST,
+    )
+
+    assert targeted_crawl_dispatch_state(task) == TargetedCrawlDispatchState.READY
+    assert [item.id for item in due_targeted_crawl_tasks(source=source, limit=5)] == [task.id]
 
 
 @pytest.mark.django_db
@@ -231,3 +298,45 @@ def test_targeted_crawl_cannot_claim_another_source_task(source: Source, operato
     second.credentials(HTTP_AUTHORIZATION=f"Bearer {other_token.plaintext}")
     denied = second.post(f"/api/v1/targeted-crawl/tasks/{task_id}/claim", {}, format="json")
     assert denied.status_code == 403
+
+
+@pytest.mark.django_db
+def test_manual_article_is_bound_to_single_source_and_is_first_scan_ready(source: Source, operator: User) -> None:
+    source_token = create_source_token(source=source, name="manual-article-source", created_by=operator)
+    client = APIClient()
+    client.force_authenticate(user=operator)
+    response = client.post(
+        "/api/v1/articles",
+        {"title": "手工录入后应立即进入监测", "published_date": timezone.localdate().isoformat()},
+        format="json",
+    )
+    assert response.status_code == 201
+    created = Article.objects.get(pk=response.json()["id"])
+    assert created.source_id == source.id
+    assert created.monitoring_status == ArticleMonitoringStatus.ACTIVE
+    assert created.monitor_until is not None
+    assert created.next_search_at is not None
+
+    worker = APIClient()
+    worker.credentials(HTTP_AUTHORIZATION=f"Bearer {source_token.plaintext}")
+    tasks = worker.get("/api/v1/targeted-crawl/tasks").json()["data"]["tasks"]
+    assert any(item["article_id"] == created.id for item in tasks)
+
+
+@pytest.mark.django_db
+def test_source_worker_backfills_preexisting_unbound_manual_article(source: Source, operator: User) -> None:
+    now = timezone.now()
+    legacy = Article.objects.create(
+        title="旧版手工文章也要进入监测",
+        normalized_title=normalize_title("旧版手工文章也要进入监测"),
+        published_date=now.date(),
+        status=ArticleStatus.ACTIVE,
+        created_by=operator,
+    )
+
+    tasks = due_targeted_crawl_tasks(source=source, limit=5)
+
+    legacy.refresh_from_db()
+    assert legacy.source_id == source.id
+    assert legacy.monitoring_status == ArticleMonitoringStatus.ACTIVE
+    assert any(task.article_id == legacy.id for task in tasks)

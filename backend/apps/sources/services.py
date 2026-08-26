@@ -25,6 +25,7 @@ from apps.articles.services import (
     ArticleDuplicateError,
     create_approved_duplicate,
     create_standard_article,
+    initialize_existing_manual_article_monitoring,
     normalize_title,
 )
 from apps.audit.models import OperationLog
@@ -47,6 +48,7 @@ from .models import (
     SearchRunStatus,
     Source,
     SourceIngestToken,
+    TargetedCrawlDispatchState,
     TargetedCrawlTask,
     TargetedCrawlTaskStatus,
 )
@@ -980,6 +982,33 @@ def _release_expired_targeted_crawl_claims(*, source: Source, now: datetime) -> 
     )
 
 
+def targeted_crawl_dispatch_state(
+    task: TargetedCrawlTask, *, now: datetime | None = None
+) -> TargetedCrawlDispatchState:
+    """Return a non-ambiguous execution state for a browser worker task.
+
+    A confirmed repost is historical evidence, not a reason to stop scanning the
+    article while its monitoring window remains open.
+    """
+
+    current_time = now or timezone.now()
+    article = task.article
+    if (
+        task.status == TargetedCrawlTaskStatus.CLOSED
+        or article.monitoring_status != ArticleMonitoringStatus.ACTIVE
+        or not article.monitor_until
+        or article.monitor_until <= current_time
+    ):
+        return TargetedCrawlDispatchState.MONITORING_ENDED
+    if task.status == TargetedCrawlTaskStatus.CLAIMED:
+        return TargetedCrawlDispatchState.CLAIMED
+    if not task.first_scan_done:
+        return TargetedCrawlDispatchState.FIRST_SCAN_READY
+    if task.next_available_at is None or task.next_available_at > current_time:
+        return TargetedCrawlDispatchState.WAIT_NEXT_SCAN
+    return TargetedCrawlDispatchState.READY
+
+
 @transaction.atomic
 def due_targeted_crawl_tasks(*, source: Source, limit: int) -> list[TargetedCrawlTask]:
     """Materialize due browser-worker tasks only for the token's source.
@@ -991,6 +1020,25 @@ def due_targeted_crawl_tasks(*, source: Source, limit: int) -> list[TargetedCraw
 
     now = timezone.now()
     _release_expired_targeted_crawl_claims(source=source, now=now)
+
+    # Backfill hand-entered/Excel articles created before their lifecycle was
+    # initialized.  Bind only unowned records to the worker's authenticated
+    # source; articles already tied to another source are never touched.
+    unbound_articles = Article.objects.select_for_update().filter(source__isnull=True, status="ACTIVE")
+    for article in unbound_articles.only(
+        "id",
+        "source",
+        "published_date",
+        "published_at",
+        "discovered_at",
+        "monitor_started_at",
+        "monitor_until",
+        "retention_until",
+        "monitoring_status",
+        "next_search_at",
+    ):
+        initialize_existing_manual_article_monitoring(article, source=source)
+
     articles = list(
         Article.objects.select_for_update()
         .filter(
@@ -1010,10 +1058,17 @@ def due_targeted_crawl_tasks(*, source: Source, limit: int) -> list[TargetedCraw
                 "next_available_at": now,
             },
         )
-        if not created and task.status == TargetedCrawlTaskStatus.PENDING and task.query != article.title:
-            task.query = article.title
-            task.next_available_at = now
-            task.save(update_fields=["query", "next_available_at", "updated_at"])
+        if not created and task.status == TargetedCrawlTaskStatus.PENDING:
+            update_fields: list[str] = []
+            if task.query != article.title:
+                task.query = article.title
+                update_fields.append("query")
+            # First collection is never subject to a stale incremental schedule.
+            if not task.first_scan_done and task.next_available_at != now:
+                task.next_available_at = now
+                update_fields.append("next_available_at")
+            if update_fields:
+                task.save(update_fields=[*update_fields, "updated_at"])
     return list(
         TargetedCrawlTask.objects.select_related("article")
         .filter(
@@ -1036,6 +1091,12 @@ def claim_targeted_crawl_task(*, task_id: int, token: SourceIngestToken) -> tupl
     )
     if task is None:
         raise PermissionError("任务不存在或不属于当前来源。")
+    if (
+        task.article.monitoring_status != ArticleMonitoringStatus.ACTIVE
+        or not task.article.monitor_until
+        or task.article.monitor_until <= now
+    ):
+        raise ValueError("文章监测期已结束，任务不能执行。")
     if task.status == TargetedCrawlTaskStatus.CLAIMED and task.claim_expires_at and task.claim_expires_at <= now:
         task.status = TargetedCrawlTaskStatus.PENDING
         task.claimed_by_token = None
@@ -1044,7 +1105,7 @@ def claim_targeted_crawl_task(*, task_id: int, token: SourceIngestToken) -> tupl
         task.claim_expires_at = None
     if task.status != TargetedCrawlTaskStatus.PENDING:
         raise ValueError("任务已被其他采集端领取或已关闭。")
-    if task.next_available_at and task.next_available_at > now:
+    if task.first_scan_done and task.next_available_at and task.next_available_at > now:
         raise ValueError("任务尚未到执行时间。")
 
     claim_token = secrets.token_urlsafe(32)
@@ -1242,6 +1303,8 @@ def complete_targeted_crawl_run(
     task.last_error_code = run.error_code
     task.last_error_message = run.error_message
     if run_status == "SUCCESS":
+        task.first_scan_done = True
+        task.first_scan_completed_at = now
         task.next_available_at = _next_search_time(task.article, now)
     else:
         task.next_available_at = min(
@@ -1260,6 +1323,8 @@ def complete_targeted_crawl_run(
             "last_completed_at",
             "last_error_code",
             "last_error_message",
+            "first_scan_done",
+            "first_scan_completed_at",
             "next_available_at",
             "updated_at",
         ]

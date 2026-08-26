@@ -25,7 +25,15 @@ class UserManagementSerializer(serializers.ModelSerializer[User]):
 
     class Meta:
         model = User
-        fields = ["id", "username", "email", "role", "is_active", "must_change_password", "password"]
+        fields = [
+            "id",
+            "username",
+            "email",
+            "role",
+            "is_active",
+            "must_change_password",
+            "password",
+        ]
         read_only_fields = ["must_change_password"]
 
     def create(self, validated_data: dict[str, object]) -> User:
@@ -47,7 +55,11 @@ class UserManagementSerializer(serializers.ModelSerializer[User]):
             instance.set_password(password)
         for field, value in validated_data.items():
             setattr(instance, field, value)
-        update_fields = [*validated_data.keys(), "password"] if password is not None else list(validated_data.keys())
+        update_fields = (
+            [*validated_data.keys(), "password"]
+            if password is not None
+            else list(validated_data.keys())
+        )
         if update_fields:
             instance.save(update_fields=update_fields)
         return instance

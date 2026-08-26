@@ -39,27 +39,43 @@ class SearchOutcome:
 
 
 class PlatformAdapter(Protocol):
-    def search_exact_title(self, *, article: Article, platform: Platform) -> SearchOutcome: ...
+    def search_exact_title(
+        self, *, article: Article, platform: Platform
+    ) -> SearchOutcome: ...
 
 
 class AdapterNotValidatedError(RuntimeError):
     pass
 
 
-def update_platform_runtime_status(*, platform: Platform, succeeded: bool, failure_reason: str = "") -> None:
+def update_platform_runtime_status(
+    *, platform: Platform, succeeded: bool, failure_reason: str = ""
+) -> None:
     now = timezone.now()
     if succeeded:
         platform.last_success_at = now
         platform.consecutive_failure_count = 0
         platform.last_failure_reason = ""
         platform.save(
-            update_fields=["last_success_at", "consecutive_failure_count", "last_failure_reason", "updated_at"]
+            update_fields=[
+                "last_success_at",
+                "consecutive_failure_count",
+                "last_failure_reason",
+                "updated_at",
+            ]
         )
         return
     platform.last_failure_at = now
     platform.consecutive_failure_count += 1
     platform.last_failure_reason = failure_reason[:500]
-    platform.save(update_fields=["last_failure_at", "consecutive_failure_count", "last_failure_reason", "updated_at"])
+    platform.save(
+        update_fields=[
+            "last_failure_at",
+            "consecutive_failure_count",
+            "last_failure_reason",
+            "updated_at",
+        ]
+    )
 
 
 def normalize_repost_url(value: str) -> str:
@@ -76,10 +92,14 @@ def no_validated_adapter(*, article: Article, platform: Platform) -> SearchOutco
     )
 
 
-def evaluate_detection(*, result: DetectionResult, adapter: PlatformAdapter | None = None) -> DetectionResult:
+def evaluate_detection(
+    *, result: DetectionResult, adapter: PlatformAdapter | None = None
+) -> DetectionResult:
     article = result.article
     platform = result.platform
-    if RepostRecord.objects.filter(article=article, platform=platform, is_valid=True).exists():
+    if RepostRecord.objects.filter(
+        article=article, platform=platform, is_valid=True
+    ).exists():
         now = timezone.now()
         result.status = PlatformDetectionStatus.FOUND
         result.reason_code = "HISTORICAL_REPOST"
@@ -129,13 +149,18 @@ def evaluate_detection(*, result: DetectionResult, adapter: PlatformAdapter | No
         return result
 
     confirmed_suffixes = tuple(platform.confirmed_title_suffixes)
-    expected_title = normalize_title(article.title, confirmed_suffixes=confirmed_suffixes)
+    expected_title = normalize_title(
+        article.title, confirmed_suffixes=confirmed_suffixes
+    )
     matching = [
         candidate
         for candidate in search.candidates
-        if normalize_title(candidate.title, confirmed_suffixes=confirmed_suffixes) == expected_title
+        if normalize_title(candidate.title, confirmed_suffixes=confirmed_suffixes)
+        == expected_title
     ]
-    result.status = PlatformDetectionStatus.FOUND if matching else PlatformDetectionStatus.NOT_FOUND
+    result.status = (
+        PlatformDetectionStatus.FOUND if matching else PlatformDetectionStatus.NOT_FOUND
+    )
     result.reason_code = ""
     result.reason_message = ""
     result.completed_at = timezone.now()
@@ -152,13 +177,22 @@ def evaluate_detection(*, result: DetectionResult, adapter: PlatformAdapter | No
     )
     update_platform_runtime_status(platform=platform, succeeded=True)
     for candidate in matching:
-        upsert_repost_record(article=article, platform=platform, candidate=candidate, checked_at=result.completed_at)
+        upsert_repost_record(
+            article=article,
+            platform=platform,
+            candidate=candidate,
+            checked_at=result.completed_at,
+        )
     return result
 
 
 @transaction.atomic
 def upsert_repost_record(
-    *, article: Article, platform: Platform, candidate: SearchCandidate, checked_at: datetime
+    *,
+    article: Article,
+    platform: Platform,
+    candidate: SearchCandidate,
+    checked_at: datetime,
 ) -> RepostRecord:
     normalized_url = normalize_repost_url(candidate.final_url or candidate.original_url)
     normalized_url_hash = sha256(normalized_url.encode()).hexdigest()

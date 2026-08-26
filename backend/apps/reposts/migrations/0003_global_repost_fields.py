@@ -10,7 +10,9 @@ def backfill_global_fields(apps, schema_editor):
     RepostRecord = apps.get_model("reposts", "RepostRecord")
     PlatformDomain = apps.get_model("platforms", "PlatformDomain")
     seen: dict[tuple[int, str], Any] = {}
-    for record in RepostRecord.objects.select_related("platform").order_by("first_discovered_at", "id"):
+    for record in RepostRecord.objects.select_related("platform").order_by(
+        "first_discovered_at", "id"
+    ):
         canonical = record.normalized_url or record.final_url or record.original_url
         key = (record.article_id, canonical)
         if key in seen:
@@ -20,8 +22,12 @@ def backfill_global_fields(apps, schema_editor):
                 keeper.save(update_fields=["last_checked_at"])
             record.delete()
             continue
-        domain_row = PlatformDomain.objects.filter(platform_id=record.platform_id).first()
-        domain = domain_row.domain if domain_row else (urlsplit(canonical).hostname or "")
+        domain_row = PlatformDomain.objects.filter(
+            platform_id=record.platform_id
+        ).first()
+        domain = (
+            domain_row.domain if domain_row else (urlsplit(canonical).hostname or "")
+        )
         record.site_name = record.platform.name
         record.site_domain = domain.lower()
         record.raw_url = record.original_url
@@ -38,7 +44,10 @@ def backfill_global_fields(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-    dependencies = [("articles", "0003_source_global_monitoring"), ("reposts", "0002_manual_supplement_fields")]
+    dependencies = [
+        ("articles", "0003_source_global_monitoring"),
+        ("reposts", "0002_manual_supplement_fields"),
+    ]
     operations = [
         migrations.AlterField(
             model_name="repostrecord",
@@ -77,7 +86,9 @@ class Migration(migrations.Migration):
             field=models.CharField(blank=True, max_length=64, null=True),
         ),
         migrations.AddField(
-            model_name="repostrecord", name="first_found_at", field=models.DateTimeField(blank=True, null=True)
+            model_name="repostrecord",
+            name="first_found_at",
+            field=models.DateTimeField(blank=True, null=True),
         ),
         migrations.AddField(
             model_name="repostrecord",
@@ -85,7 +96,9 @@ class Migration(migrations.Migration):
             field=models.DateTimeField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name="repostrecord", name="last_seen_at", field=models.DateTimeField(blank=True, null=True)
+            model_name="repostrecord",
+            name="last_seen_at",
+            field=models.DateTimeField(blank=True, null=True),
         ),
         migrations.AddField(
             model_name="repostrecord",
@@ -93,21 +106,31 @@ class Migration(migrations.Migration):
             field=models.CharField(blank=True, max_length=500),
         ),
         migrations.AddField(
-            model_name="repostrecord", name="raw_url", field=models.URLField(blank=True, max_length=2048)
+            model_name="repostrecord",
+            name="raw_url",
+            field=models.URLField(blank=True, max_length=2048),
         ),
         migrations.AddField(
-            model_name="repostrecord", name="result_published_at", field=models.DateTimeField(blank=True, null=True)
+            model_name="repostrecord",
+            name="result_published_at",
+            field=models.DateTimeField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name="repostrecord", name="result_title", field=models.CharField(blank=True, max_length=500)
+            model_name="repostrecord",
+            name="result_title",
+            field=models.CharField(blank=True, max_length=500),
         ),
         migrations.AddField(
-            model_name="repostrecord", name="search_provider", field=models.CharField(blank=True, max_length=50)
+            model_name="repostrecord",
+            name="search_provider",
+            field=models.CharField(blank=True, max_length=50),
         ),
         migrations.AddField(
             model_name="repostrecord",
             name="similarity_score",
-            field=models.DecimalField(blank=True, decimal_places=2, max_digits=5, null=True),
+            field=models.DecimalField(
+                blank=True, decimal_places=2, max_digits=5, null=True
+            ),
         ),
         migrations.AddField(
             model_name="repostrecord",
@@ -115,13 +138,16 @@ class Migration(migrations.Migration):
             field=models.CharField(blank=True, db_index=True, max_length=253),
         ),
         migrations.AddField(
-            model_name="repostrecord", name="site_name", field=models.CharField(blank=True, max_length=255)
+            model_name="repostrecord",
+            name="site_name",
+            field=models.CharField(blank=True, max_length=255),
         ),
         migrations.RunPython(backfill_global_fields, migrations.RunPython.noop),
         migrations.AddConstraint(
             model_name="repostrecord",
             constraint=models.UniqueConstraint(
-                fields=("article", "canonical_url_hash"), name="uniq_article_canonical_hash"
+                fields=("article", "canonical_url_hash"),
+                name="uniq_article_canonical_hash",
             ),
         ),
     ]

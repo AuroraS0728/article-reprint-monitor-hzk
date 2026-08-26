@@ -15,7 +15,7 @@ from openpyxl import load_workbook
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.articles.models import Article, ArticleIngestMethod, ArticleMonitoringStatus
+from apps.articles.models import Article, ArticleIngestMethod, ArticleMonitoringStatus, ArticleStatus
 from apps.audit.models import OperationLog
 from apps.reposts.export_services import (
     EXCEL_DATETIME_FORMAT,
@@ -42,6 +42,7 @@ from apps.sources.models import (
     Source,
 )
 from apps.sources.reading_export_services import build_owned_reading_workbook
+from apps.sources.reading_metrics import collect_due_reading_metrics
 from apps.sources.services import (
     _next_search_time,
     canonicalize_http_url,
@@ -567,6 +568,108 @@ def test_reading_module_exposes_manual_other_owned_channel(operator: User) -> No
 
 
 @pytest.mark.django_db
+@override_settings(SEARCH_SIMILARITY_THRESHOLD=101, READING_METRIC_BASE_URL="http://metrics.example.com")
+def test_archived_owned_publications_remain_visible_in_reading_history(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    article.status = ArticleStatus.ARCHIVED
+    article.save(update_fields=["status"])
+    channel = OwnedChannel.objects.create(
+        code="ARCHIVE_READING",
+        name="归档阅读量渠道",
+        channel_type="OFFICIAL_WEBSITE",
+        match_rules={"domains": ["archive-reading.example.com"]},
+    )
+    run = search_article(
+        article,
+        provider=StaticProvider(
+            [
+                SearchCandidate(
+                    title=article.title, url="https://archive-reading.example.com/a", site_name="历史阅读量站点"
+                )
+            ]
+        ),
+    )
+    candidate = SearchRunCandidate.objects.get(search_run=run)
+    client = APIClient()
+    client.force_authenticate(operator)
+    reviewed = client.post(
+        f"/api/v1/search-candidates/{candidate.id}/review",
+        {"action": "CONFIRM_OWNED", "reason": "归档后保留阅读量历史", "owned_channel_id": channel.id},
+        format="json",
+    )
+    assert reviewed.status_code == 200
+
+    with patch("apps.sources.reading_metrics.httpx.post") as http_post:
+        http_post.return_value = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"data": [{"title": article.title, "reading_count": 88}]},
+        )
+        result = collect_due_reading_metrics()
+        assert result["success"] == 1
+        reading = client.get("/api/v1/reading-monitor/owned-publications")
+        assert reading.status_code == 200
+        publication = reading.json()["data"]["publications"][0]
+        assert publication["article_id"] == article.id
+        assert publication["reading_count"] == 88
+
+        content, _ = build_owned_reading_workbook()
+
+    workbook = load_workbook(BytesIO(content))
+    assert workbook["数据"]["B2"].value == article.title
+    assert workbook["数据"]["D2"].value == 88
+
+
+@pytest.mark.django_db
+@override_settings(SEARCH_SIMILARITY_THRESHOLD=101, READING_METRIC_BASE_URL="http://metrics.example.com")
+def test_reading_module_uses_batch_metric_api_and_export_includes_values(source: Source, operator: User) -> None:
+    article = create_source_article(source=source, operator=operator)
+    channel = OwnedChannel.objects.create(
+        code="READING_API",
+        name="阅读量接口渠道",
+        channel_type="OFFICIAL_WEBSITE",
+        match_rules={"domains": ["reading-api.example.com"]},
+    )
+    run = search_article(
+        article,
+        provider=StaticProvider(
+            [SearchCandidate(title=article.title, url="https://reading-api.example.com/a", site_name="阅读量站点")]
+        ),
+    )
+    candidate = SearchRunCandidate.objects.get(search_run=run)
+    client = APIClient()
+    client.force_authenticate(operator)
+    reviewed = client.post(
+        f"/api/v1/search-candidates/{candidate.id}/review",
+        {"action": "CONFIRM_OWNED", "reason": "归入阅读量", "owned_channel_id": channel.id},
+        format="json",
+    )
+    assert reviewed.status_code == 200
+
+    with patch("apps.sources.reading_metrics.httpx.post") as http_post:
+        http_post.return_value = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"data": [{"title": article.title, "reading_count": 321}]},
+        )
+        result = collect_due_reading_metrics()
+        assert result["success"] == 1
+        response = client.get("/api/v1/reading-monitor/owned-publications")
+        assert response.status_code == 200
+        publication = response.json()["data"]["publications"][0]
+        assert publication["reading_count"] == 321
+        assert response.json()["data"]["provider_status"] == "自动检测已启用"
+
+        content, _ = build_owned_reading_workbook()
+
+    workbook = load_workbook(BytesIO(content))
+    assert workbook["数据"]["D2"].value == 321
+    assert workbook[channel.name]["E2"].value == 321
+    channel_summary = next(
+        row for row in workbook["总统计"].iter_rows(min_row=2, values_only=True) if row[0] == channel.name
+    )
+    assert channel_summary[3] == 1
+
+
+@pytest.mark.django_db
 @override_settings(SEARCH_SIMILARITY_THRESHOLD=101)
 def test_candidate_review_requires_operator_or_administrator(source: Source, operator: User) -> None:
     article = create_source_article(source=source, operator=operator)
@@ -829,7 +932,7 @@ def test_configured_media_site_auto_confirms_candidate_threshold_and_keeps_confi
     external = SearchCandidate(
         title="这一主线再掀涨停潮低位方向正在成为新主角报道",
         url="https://auto-media.example.com/repost",
-        site_name="自动转载媒体",
+        site_name="auto-media.example.com",
     )
     owned = SearchCandidate(
         title="这一主线再掀涨停潮低位方向正在成为新主角报道",
@@ -844,6 +947,8 @@ def test_configured_media_site_auto_confirms_candidate_threshold_and_keeps_confi
     repost = RepostRecord.objects.get(article=article, canonical_url__contains="/repost")
     assert repost.content_relation == ContentRelation.REPOST
     assert repost.classification_reason == "AUTO_REPOST_SITE_DOMAIN:AUTO_MEDIA"
+    assert repost.site_name == "自动转载媒体"
+    assert SearchRunCandidate.objects.get(search_run=run, canonical_url__contains="/repost").site_name == "自动转载媒体"
     # A positively identified first-party account enters reading measurement,
     # and is never counted as an external repost.
     owned_record = RepostRecord.objects.get(article=article, canonical_url__contains="/owned")

@@ -8,8 +8,12 @@ from .models import Platform, PlatformDomain
 
 
 class PlatformSerializer(serializers.ModelSerializer[Platform]):
-    domain_names = serializers.ListField(child=serializers.CharField(max_length=253), write_only=True, required=False)
-    domains: serializers.SlugRelatedField = serializers.SlugRelatedField(many=True, read_only=True, slug_field="domain")
+    domain_names = serializers.ListField(
+        child=serializers.CharField(max_length=253), write_only=True, required=False
+    )
+    domains: serializers.SlugRelatedField = serializers.SlugRelatedField(
+        many=True, read_only=True, slug_field="domain"
+    )
 
     class Meta:
         model = Platform
@@ -59,7 +63,9 @@ class PlatformSerializer(serializers.ModelSerializer[Platform]):
 
     def validate_code(self, value: str) -> str:
         if not re.fullmatch(r"[A-Z0-9_]{2,50}", value):
-            raise serializers.ValidationError("平台代码必须为2至50位大写字母、数字或下划线。")
+            raise serializers.ValidationError(
+                "平台代码必须为2至50位大写字母、数字或下划线。"
+            )
         return value
 
     def validate_domain_names(self, values: list[str]) -> list[str]:
@@ -67,7 +73,9 @@ class PlatformSerializer(serializers.ModelSerializer[Platform]):
         for value in values:
             domain = value.strip().lower().rstrip(".")
             if "://" in domain or "/" in domain or domain == "localhost":
-                raise serializers.ValidationError("域名白名单只能使用公开域名，不接受协议、路径或 localhost。")
+                raise serializers.ValidationError(
+                    "域名白名单只能使用公开域名，不接受协议、路径或 localhost。"
+                )
             try:
                 ipaddress.ip_address(domain)
             except ValueError as error:
@@ -82,7 +90,9 @@ class PlatformSerializer(serializers.ModelSerializer[Platform]):
         if domains is None:
             return
         platform.domains.all().delete()
-        PlatformDomain.objects.bulk_create([PlatformDomain(platform=platform, domain=domain) for domain in domains])
+        PlatformDomain.objects.bulk_create(
+            [PlatformDomain(platform=platform, domain=domain) for domain in domains]
+        )
 
     def create(self, validated_data: dict[str, object]) -> Platform:
         domains = cast(list[str], validated_data.pop("domain_names", []))

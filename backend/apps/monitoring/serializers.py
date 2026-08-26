@@ -33,15 +33,21 @@ class DetectionBatchSerializer(serializers.ModelSerializer[DetectionBatch]):
 
 
 class DetectionBatchCreateSerializer(serializers.Serializer[object]):
-    article_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, default=list)
-    platform_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, default=list)
+    article_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, default=list
+    )
+    platform_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, default=list
+    )
     article_date_from = serializers.DateField(required=False)
     article_date_to = serializers.DateField(required=False)
     use_all_enabled_platforms = serializers.BooleanField(default=False)
     automatic = serializers.BooleanField(default=False)
 
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
-        if not attrs.get("article_ids") and not (attrs.get("article_date_from") or attrs.get("article_date_to")):
+        if not attrs.get("article_ids") and not (
+            attrs.get("article_date_from") or attrs.get("article_date_to")
+        ):
             raise serializers.ValidationError("请选择文章或原创发布日期范围。")
         if not attrs.get("platform_ids") and not attrs.get("use_all_enabled_platforms"):
             raise serializers.ValidationError("请选择平台或全部启用平台。")
@@ -72,4 +78,12 @@ class DetectionResultSerializer(serializers.ModelSerializer[DetectionResult]):
 class StatusSnapshotSerializer(serializers.ModelSerializer[StatusSnapshot]):
     class Meta:
         model = StatusSnapshot
-        fields = ["id", "snapshot_type", "cutoff_at", "source_batch", "matrix_data", "statistics_data", "created_at"]
+        fields = [
+            "id",
+            "snapshot_type",
+            "cutoff_at",
+            "source_batch",
+            "matrix_data",
+            "statistics_data",
+            "created_at",
+        ]

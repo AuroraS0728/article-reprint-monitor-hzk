@@ -17,7 +17,11 @@ def record_audit(
     after_data: dict[str, Any] | None = None,
 ) -> None:
     forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    ip_address = forwarded.split(",")[0].strip() if forwarded else request.META.get("REMOTE_ADDR")
+    ip_address = (
+        forwarded.split(",")[0].strip()
+        if forwarded
+        else request.META.get("REMOTE_ADDR")
+    )
     OperationLog.objects.create(
         actor=request.user if request.user.is_authenticated else None,
         action_type=action_type,

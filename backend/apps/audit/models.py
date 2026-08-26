@@ -3,7 +3,9 @@ from django.db import models
 
 
 class OperationLog(models.Model):
-    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
+    )
     action_type = models.CharField(max_length=80)
     target_type = models.CharField(max_length=80)
     target_id = models.CharField(max_length=64, blank=True)

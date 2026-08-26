@@ -28,16 +28,23 @@ class GeneratedReport(models.Model):
     period_start = models.DateField()
     period_end = models.DateField()
     snapshot = models.ForeignKey("monitoring.StatusSnapshot", on_delete=models.PROTECT)
-    generated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT)
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT
+    )
     generated_at = models.DateTimeField(auto_now_add=True)
-    report_file = models.FileField(upload_to=report_upload_path, max_length=300, blank=True)
+    report_file = models.FileField(
+        upload_to=report_upload_path, max_length=300, blank=True
+    )
     file_sha256 = models.CharField(max_length=64)
     statistics_range = models.JSONField(default=dict)
 
     class Meta:
         db_table = "reports_generated_report"
         constraints = [
-            models.UniqueConstraint(fields=["report_type", "report_date", "version"], name="uniq_report_version")
+            models.UniqueConstraint(
+                fields=["report_type", "report_date", "version"],
+                name="uniq_report_version",
+            )
         ]
         ordering = ["-report_date", "-version", "-id"]
 
@@ -52,7 +59,9 @@ class SMTPConfiguration(models.Model):
     cc_recipients = models.JSONField(default=list)
     use_tls = models.BooleanField(default=True)
     enabled = models.BooleanField(default=False)
-    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -60,13 +69,19 @@ class SMTPConfiguration(models.Model):
 
 
 class ReportEmailDelivery(models.Model):
-    report = models.ForeignKey(GeneratedReport, related_name="email_deliveries", on_delete=models.PROTECT)
-    status = models.CharField(max_length=16, choices=DeliveryStatus.choices, default=DeliveryStatus.PENDING)
+    report = models.ForeignKey(
+        GeneratedReport, related_name="email_deliveries", on_delete=models.PROTECT
+    )
+    status = models.CharField(
+        max_length=16, choices=DeliveryStatus.choices, default=DeliveryStatus.PENDING
+    )
     recipients = models.JSONField(default=list)
     cc_recipients = models.JSONField(default=list)
     attempt_count = models.PositiveSmallIntegerField(default=0)
     error_message = models.CharField(max_length=1000, blank=True)
-    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT
+    )
     sent_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

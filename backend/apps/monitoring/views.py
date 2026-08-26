@@ -33,11 +33,17 @@ class DetectionBatchListCreateView(APIView):
     serializer_class = DetectionBatchCreateSerializer
 
     def get_permissions(self):
-        return [CanOperate()] if self.request.method == "POST" else [permissions.IsAuthenticated()]
+        return (
+            [CanOperate()]
+            if self.request.method == "POST"
+            else [permissions.IsAuthenticated()]
+        )
 
     @extend_schema(operation_id="detection_batch_list")
     def get(self, request: Request) -> Response:
-        return ok(DetectionBatchSerializer(DetectionBatch.objects.all()[:100], many=True).data)
+        return ok(
+            DetectionBatchSerializer(DetectionBatch.objects.all()[:100], many=True).data
+        )
 
     def post(self, request: Request) -> Response:
         serializer = DetectionBatchCreateSerializer(data=request.data)
@@ -56,7 +62,10 @@ class DetectionBatchListCreateView(APIView):
             )
         except ValueError as error:
             return Response(
-                {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(error)}},
+                {
+                    "success": False,
+                    "error": {"code": "VALIDATION_ERROR", "message": str(error)},
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         record_audit(
@@ -64,7 +73,11 @@ class DetectionBatchListCreateView(APIView):
             action_type="DETECTION_BATCH_CREATE",
             target_type="DetectionBatch",
             target_id=batch.id,
-            after_data={"trigger": batch.trigger, "article_ids": batch.article_ids, "platform_ids": batch.platform_ids},
+            after_data={
+                "trigger": batch.trigger,
+                "article_ids": batch.article_ids,
+                "platform_ids": batch.platform_ids,
+            },
         )
         run_detection_batch.delay(batch.id)
         return ok(DetectionBatchSerializer(batch).data, status.HTTP_201_CREATED)
@@ -76,7 +89,9 @@ class DetectionBatchDetailView(APIView):
 
     @extend_schema(operation_id="detection_batch_retrieve")
     def get(self, request: Request, pk: int) -> Response:
-        return ok(DetectionBatchSerializer(get_object_or_404(DetectionBatch, pk=pk)).data)
+        return ok(
+            DetectionBatchSerializer(get_object_or_404(DetectionBatch, pk=pk)).data
+        )
 
 
 class DetectionSelectionDefaultsView(APIView):
@@ -85,12 +100,16 @@ class DetectionSelectionDefaultsView(APIView):
 
     def get(self, request: Request) -> Response:
         latest_batch = (
-            DetectionBatch.objects.filter(status=BatchStatus.COMPLETED).order_by("-completed_at", "-id").first()
+            DetectionBatch.objects.filter(status=BatchStatus.COMPLETED)
+            .order_by("-completed_at", "-id")
+            .first()
         )
         articles = Article.objects.filter(status=ArticleStatus.ACTIVE)
         if latest_batch and latest_batch.created_at:
             articles = articles.filter(created_at__gt=latest_batch.created_at)
-        return ok({"article_ids": list(articles.order_by("id").values_list("id", flat=True))})
+        return ok(
+            {"article_ids": list(articles.order_by("id").values_list("id", flat=True))}
+        )
 
 
 class DetectionMatrixView(APIView):
@@ -99,7 +118,9 @@ class DetectionMatrixView(APIView):
 
     def get(self, request: Request, pk: int) -> Response:
         batch = get_object_or_404(DetectionBatch, pk=pk)
-        results = DetectionResult.objects.filter(batch=batch).select_related("article", "platform")
+        results = DetectionResult.objects.filter(batch=batch).select_related(
+            "article", "platform"
+        )
         return ok(
             {
                 "batch": DetectionBatchSerializer(batch).data,
@@ -128,11 +149,22 @@ class StatusMatrixView(APIView):
             requested_date = datetime.strptime(as_of, "%Y-%m-%d").date()
         except ValueError:
             return Response(
-                {"success": False, "error": {"code": "INVALID_DATE", "message": "as_of 必须为 YYYY-MM-DD。"}},
+                {
+                    "success": False,
+                    "error": {
+                        "code": "INVALID_DATE",
+                        "message": "as_of 必须为 YYYY-MM-DD。",
+                    },
+                },
                 status=400,
             )
         cutoff_at = timezone.make_aware(datetime.combine(requested_date, time.max))
-        return ok({"as_of": cutoff_at.isoformat(), "matrix": matrix_data_as_of(cutoff_at=cutoff_at)})
+        return ok(
+            {
+                "as_of": cutoff_at.isoformat(),
+                "matrix": matrix_data_as_of(cutoff_at=cutoff_at),
+            }
+        )
 
 
 class StatusSnapshotListView(APIView):
@@ -144,7 +176,11 @@ class StatusSnapshotListView(APIView):
         snapshot_type = request.query_params.get("snapshot_type")
         if snapshot_type:
             snapshots = snapshots.filter(snapshot_type=snapshot_type)
-        return ok(StatusSnapshotSerializer(snapshots.order_by("-cutoff_at")[:100], many=True).data)
+        return ok(
+            StatusSnapshotSerializer(
+                snapshots.order_by("-cutoff_at")[:100], many=True
+            ).data
+        )
 
 
 class DetectionResultRepostsView(APIView):
@@ -152,8 +188,12 @@ class DetectionResultRepostsView(APIView):
     serializer_class = DetectionResultSerializer
 
     def get(self, request: Request, pk: int) -> Response:
-        result = get_object_or_404(DetectionResult.objects.select_related("batch"), pk=pk)
-        rows = RepostRecord.objects.filter(article=result.article, platform=result.platform, is_valid=True)
+        result = get_object_or_404(
+            DetectionResult.objects.select_related("batch"), pk=pk
+        )
+        rows = RepostRecord.objects.filter(
+            article=result.article, platform=result.platform, is_valid=True
+        )
         if result.batch.completed_at:
             rows = rows.filter(first_discovered_at__lte=result.batch.completed_at)
         return ok(
@@ -166,7 +206,9 @@ class DetectionResultRepostsView(APIView):
                     "repost_title": row.repost_title,
                     "repost_published_at": row.repost_published_at,
                     "repost_published_display": (
-                        row.repost_published_at.isoformat() if row.repost_published_at else "无"
+                        row.repost_published_at.isoformat()
+                        if row.repost_published_at
+                        else "无"
                     ),
                     "first_discovered_at": row.first_discovered_at,
                     "last_checked_at": row.last_checked_at,

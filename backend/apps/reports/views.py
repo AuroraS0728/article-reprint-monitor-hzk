@@ -16,7 +16,11 @@ from apps.core.views import ok
 
 from .mail_services import SMTPConfigurationError, smtp_configuration
 from .models import GeneratedReport, ReportEmailDelivery, ReportType
-from .serializers import EmailDeliverySerializer, ReportSerializer, SMTPConfigurationSerializer
+from .serializers import (
+    EmailDeliverySerializer,
+    ReportSerializer,
+    SMTPConfigurationSerializer,
+)
 from .services import create_report
 from .tasks import send_report_email
 
@@ -43,11 +47,19 @@ class ReportDownloadView(APIView):
             return Response(
                 {
                     "success": False,
-                    "error": {"code": "REPORT_FILE_EXPIRED", "message": "报表文件已按保留策略清理，可重新生成。"},
+                    "error": {
+                        "code": "REPORT_FILE_EXPIRED",
+                        "message": "报表文件已按保留策略清理，可重新生成。",
+                    },
                 },
                 status=404,
             )
-        record_audit(request, action_type="REPORT_DOWNLOAD", target_type="GeneratedReport", target_id=report.id)
+        record_audit(
+            request,
+            action_type="REPORT_DOWNLOAD",
+            target_type="GeneratedReport",
+            target_id=report.id,
+        )
         return FileResponse(
             report.report_file.open("rb"),
             as_attachment=True,
@@ -90,15 +102,26 @@ class SMTPConfigurationView(APIView):
 
     def patch(self, request: Request) -> Response:
         config = smtp_configuration()
-        serializer = SMTPConfigurationSerializer(config, data=request.data, partial=True)
+        serializer = SMTPConfigurationSerializer(
+            config, data=request.data, partial=True
+        )
         serializer.is_valid(raise_exception=True)
         try:
             changed = serializer.save(updated_by=request.user)
         except SMTPConfigurationError as error:
             return Response(
-                {"success": False, "error": {"code": "SMTP_CONFIG_ERROR", "message": str(error)}}, status=400
+                {
+                    "success": False,
+                    "error": {"code": "SMTP_CONFIG_ERROR", "message": str(error)},
+                },
+                status=400,
             )
-        record_audit(request, action_type="SMTP_CONFIG_UPDATE", target_type="SMTPConfiguration", target_id=changed.id)
+        record_audit(
+            request,
+            action_type="SMTP_CONFIG_UPDATE",
+            target_type="SMTPConfiguration",
+            target_id=changed.id,
+        )
         return ok(SMTPConfigurationSerializer(changed).data)
 
 
@@ -107,7 +130,11 @@ class EmailDeliveryListView(APIView):
     serializer_class = EmailDeliverySerializer
 
     def get(self, request: Request) -> Response:
-        return ok(EmailDeliverySerializer(ReportEmailDelivery.objects.all()[:100], many=True).data)
+        return ok(
+            EmailDeliverySerializer(
+                ReportEmailDelivery.objects.all()[:100], many=True
+            ).data
+        )
 
 
 class EmailDeliveryResendView(APIView):
@@ -125,7 +152,10 @@ class EmailDeliveryResendView(APIView):
         )
         send_report_email.delay(delivery.id)
         record_audit(
-            request, action_type="REPORT_EMAIL_RESEND", target_type="ReportEmailDelivery", target_id=delivery.id
+            request,
+            action_type="REPORT_EMAIL_RESEND",
+            target_type="ReportEmailDelivery",
+            target_id=delivery.id,
         )
         return ok(EmailDeliverySerializer(delivery).data, status.HTTP_201_CREATED)
 
@@ -135,10 +165,18 @@ class TestEmailView(APIView):
     serializer_class = EmailDeliverySerializer
 
     def post(self, request: Request) -> Response:
-        latest_weekly = GeneratedReport.objects.filter(report_type=ReportType.WEEKLY).first()
+        latest_weekly = GeneratedReport.objects.filter(
+            report_type=ReportType.WEEKLY
+        ).first()
         if latest_weekly is None:
             return Response(
-                {"success": False, "error": {"code": "REPORT_NOT_FOUND", "message": "尚无周报附件可发送测试邮件。"}},
+                {
+                    "success": False,
+                    "error": {
+                        "code": "REPORT_NOT_FOUND",
+                        "message": "尚无周报附件可发送测试邮件。",
+                    },
+                },
                 status=400,
             )
         config = smtp_configuration()
@@ -150,5 +188,10 @@ class TestEmailView(APIView):
             requested_by=actor,
         )
         send_report_email.delay(delivery.id)
-        record_audit(request, action_type="SMTP_TEST_EMAIL", target_type="ReportEmailDelivery", target_id=delivery.id)
+        record_audit(
+            request,
+            action_type="SMTP_TEST_EMAIL",
+            target_type="ReportEmailDelivery",
+            target_id=delivery.id,
+        )
         return ok(EmailDeliverySerializer(delivery).data, status.HTTP_201_CREATED)
