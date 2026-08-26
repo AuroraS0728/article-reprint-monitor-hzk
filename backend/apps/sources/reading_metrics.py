@@ -15,6 +15,7 @@ from django.utils import timezone
 from apps.reposts.models import ContentRelation, RepostRecord
 
 from .models import ReadingMetricObservation, ReadingMetricStatus
+from .services import canonicalize_http_url
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,14 @@ class ReadingMetric:
     observed_at: datetime | None
     status: str
     error_message: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderReadingEntry:
+    """One concrete publication returned by the approved reading service."""
+
+    url: str
+    reading_count: int | None
 
 
 class ReadingMetricProvider(Protocol):
@@ -74,27 +83,91 @@ def _extract_reading_count(payload: Any) -> int | None:
     return None
 
 
-def _extract_title_map(payload: Any) -> dict[str, int | None]:
-    title_map: dict[str, int | None] = {}
+def _provider_title_entries(payload: Any) -> dict[str, list[ProviderReadingEntry]]:
+    """Decode both supported provider responses without inventing URL matches.
+
+    The batch endpoint returns ``{data: {title: [{platform, url, count}]}}``.
+    Older approved providers may instead return a list of ``{title, reading_count}``
+    values.  A count is only applied to a saved publication when its URL is the
+    returned URL, except for the legacy single title/count response with no URL.
+    """
+
+    title_map: dict[str, list[ProviderReadingEntry]] = {}
+
+    def add(title: object, item: object) -> None:
+        if not isinstance(title, str) or not title.strip() or not isinstance(item, dict):
+            return
+        raw_url = item.get("url")
+        url = raw_url.strip() if isinstance(raw_url, str) else ""
+        title_map.setdefault(title, []).append(
+            ProviderReadingEntry(url=url, reading_count=_extract_reading_count(item))
+        )
+
     if isinstance(payload, dict):
         direct_titles = payload.get("titles")
         if isinstance(direct_titles, dict):
             for title, details in direct_titles.items():
-                title_map[str(title)] = _extract_reading_count(details)
+                if isinstance(details, list):
+                    for item in details:
+                        add(title, item)
+                elif isinstance(details, dict):
+                    add(title, details)
         for key in ("data", "result"):
             nested = payload.get(key)
             if isinstance(nested, dict):
-                for title, count in _extract_title_map(nested).items():
-                    title_map.setdefault(title, count)
+                for title, details in nested.items():
+                    if isinstance(details, list):
+                        for item in details:
+                            add(title, item)
+                    elif isinstance(details, dict):
+                        add(title, details)
+                for title, entries in _provider_title_entries(nested).items():
+                    title_map.setdefault(title, []).extend(entries)
+            elif isinstance(nested, list):
+                for item in nested:
+                    if not isinstance(item, dict):
+                        continue
+                    add(item.get("title") or item.get("article_title") or item.get("name"), item)
     elif isinstance(payload, list):
         for item in payload:
             if not isinstance(item, dict):
                 continue
-            title = item.get("title") or item.get("article_title") or item.get("name")
-            if not title:
-                continue
-            title_map[str(title)] = _extract_reading_count(item)
+            add(item.get("title") or item.get("article_title") or item.get("name"), item)
     return title_map
+
+
+def _comparison_url(value: str) -> str:
+    """Normalise provider and saved URLs for equality without treating http/https as different."""
+
+    canonical = canonicalize_http_url(value)
+    scheme_separator = canonical.find("://")
+    return canonical[scheme_separator + 3 :] if scheme_separator >= 0 else canonical
+
+
+def _reading_count_for_record(record: RepostRecord, entries: list[ProviderReadingEntry]) -> int | None:
+    record_url = record.canonical_url or record.normalized_url
+    if record_url:
+        try:
+            comparable_record_url = _comparison_url(record_url)
+        except ValueError:
+            comparable_record_url = ""
+        for entry in entries:
+            if not entry.url:
+                continue
+            try:
+                if comparable_record_url and _comparison_url(entry.url) == comparable_record_url:
+                    return entry.reading_count
+            except ValueError:
+                continue
+
+    # Compatibility for an approved provider that returns precisely one count for
+    # a title but does not expose a publication URL.  Never apply this fallback to
+    # multi-publication responses, because that would assign one channel's count
+    # to another channel.
+    url_less_entries = [entry for entry in entries if not entry.url]
+    if len(entries) == 1 and len(url_less_entries) == 1:
+        return url_less_entries[0].reading_count
+    return None
 
 
 def _request_json(path: str, payload: dict[str, Any]) -> Any:
@@ -156,7 +229,7 @@ def query_reading_metric_provider(records: Sequence[RepostRecord]) -> tuple[dict
     try:
         batch_payload = {"titles": list(title_to_records)}
         batch_response = _request_json("/polls/api/query_titles/", batch_payload)
-        title_map = _extract_title_map(batch_response)
+        title_map = _provider_title_entries(batch_response)
     except Exception:
         title_map = {}
         provider_status = "自动检测部分失败"
@@ -165,20 +238,23 @@ def query_reading_metric_provider(records: Sequence[RepostRecord]) -> tuple[dict
     for title in unresolved_titles:
         try:
             single_response = _request_json("/polls/api/query_title_stats/", {"title": title})
-            title_map[title] = _extract_reading_count(single_response)
+            title_map[title] = _provider_title_entries({"data": {title: single_response}}).get(title, [])
         except Exception:
             title_errors[title] = "阅读量服务请求失败"
             provider_status = "自动检测部分失败"
 
     for title, matched_records in title_to_records.items():
-        count = title_map.get(title)
+        entries = title_map.get(title, [])
         if title in title_errors:
             metric_status = ReadingMetricStatus.ERROR.label
-        elif count is None:
-            metric_status = ReadingMetricStatus.NOT_FOUND.label
-        else:
-            metric_status = ReadingMetricStatus.SUCCESS.label
         for record in matched_records:
+            count = _reading_count_for_record(record, entries)
+            if title in title_errors:
+                metric_status = ReadingMetricStatus.ERROR.label
+            elif count is None:
+                metric_status = ReadingMetricStatus.NOT_FOUND.label
+            else:
+                metric_status = ReadingMetricStatus.SUCCESS.label
             metrics[record.id] = ReadingMetric(
                 publication_url=record.canonical_url or record.normalized_url,
                 reading_count=count,

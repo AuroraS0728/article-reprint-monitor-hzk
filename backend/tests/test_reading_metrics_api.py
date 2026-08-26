@@ -15,7 +15,7 @@ from apps.articles.models import Article, ArticleMonitoringStatus, ArticleStatus
 from apps.articles.services import normalize_title
 from apps.reposts.models import ContentRelation, RepostRecord
 from apps.sources.models import OwnedChannel, OwnedChannelType, ReadingMetricObservation, Source
-from apps.sources.reading_metrics import collect_due_reading_metrics
+from apps.sources.reading_metrics import collect_due_reading_metrics, query_reading_metric_provider
 from apps.sources.token_services import create_source_token
 
 
@@ -182,3 +182,67 @@ def test_reading_metrics_are_collected_automatically_without_claiming(
         repeated = collect_due_reading_metrics()
     assert repeated["selected"] == 0
     http_post.assert_not_called()
+
+
+@pytest.mark.django_db
+@override_settings(READING_METRIC_BASE_URL="http://approved-internal-metrics")
+def test_reading_metrics_match_the_provider_count_by_concrete_publication_url(
+    source: Source, operator: User, owned_record: RepostRecord
+) -> None:
+    first_url = "https://www.toutiao.com/item/7594407547390493238/"
+    second_url = "https://www.sohu.com/a/975237356_135869"
+    first_hash = sha256(first_url.encode("utf-8")).hexdigest()
+    second_hash = sha256(second_url.encode("utf-8")).hexdigest()
+    owned_record.raw_url = first_url
+    owned_record.canonical_url = first_url
+    owned_record.canonical_url_hash = first_hash
+    owned_record.original_url = first_url
+    owned_record.normalized_url = first_url
+    owned_record.normalized_url_hash = first_hash
+    owned_record.save(
+        update_fields=[
+            "raw_url",
+            "canonical_url",
+            "canonical_url_hash",
+            "original_url",
+            "normalized_url",
+            "normalized_url_hash",
+        ]
+    )
+    second_record = RepostRecord.objects.create(
+        article=owned_record.article,
+        site_name="搜狐",
+        site_domain="sohu.com",
+        raw_url=second_url,
+        canonical_url=second_url,
+        canonical_url_hash=second_hash,
+        original_url=second_url,
+        normalized_url=second_url,
+        normalized_url_hash=second_hash,
+        repost_title=owned_record.article.title,
+        result_title=owned_record.article.title,
+        content_relation=ContentRelation.OWNED,
+        owned_channel=owned_record.owned_channel,
+        first_discovered_at=timezone.now(),
+        first_found_at=timezone.now(),
+        last_checked_at=timezone.now(),
+        data_source="TEST",
+    )
+
+    with patch("apps.sources.reading_metrics.httpx.post") as http_post:
+        http_post.return_value = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "data": {
+                    owned_record.article.title: [
+                        {"platform": "今日头条", "url": first_url, "count": 76},
+                        {"platform": "搜狐", "url": second_url, "count": 1878},
+                    ]
+                }
+            },
+        )
+        metrics, provider_status = query_reading_metric_provider([owned_record, second_record])
+
+    assert provider_status == "自动检测成功"
+    assert metrics[owned_record.id].reading_count == 76
+    assert metrics[second_record.id].reading_count == 1878
